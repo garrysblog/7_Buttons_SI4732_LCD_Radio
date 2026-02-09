@@ -1,0 +1,97 @@
+/**
+ * @file button_handler.h
+ * @brief Button debouncing and handling functions
+ */
+
+#ifndef BUTTON_HANDLER_H
+#define BUTTON_HANDLER_H
+
+#include <Arduino.h>
+#include "config.h"
+#include "types.h"
+
+// ============================================================================
+// BUTTON STATE MANAGEMENT
+// ============================================================================
+
+/**
+ * @brief Handle button press with debouncing
+ * 
+ * @param pin GPIO pin number
+ * @param state Button state structure
+ * @return true if button was just pressed (rising edge), false otherwise
+ */
+bool handleButtonPress(uint8_t pin, ButtonState& state) {
+  bool currentlyPressed = (digitalRead(pin) == LOW);
+  unsigned long now = millis();
+  
+  if (currentlyPressed && !state.isPressed) {
+    // Button just pressed - check debounce
+    if ((now - state.lastPressTime) > DEBOUNCE_DELAY_MS) {
+      state.isPressed = true;
+      state.lastPressTime = now;
+      return true;  // Valid button press detected
+    }
+  } else if (!currentlyPressed && state.isPressed) {
+    // Button released
+    state.isPressed = false;
+  }
+  
+  return false;
+}
+
+/**
+ * @brief Initialize button state structure
+ * 
+ * @param state Button state to initialize
+ */
+void initButtonState(ButtonState& state) {
+  state.lastPressTime = 0;
+  state.firstPressTime = 0;
+  state.isPressed = false;
+  state.clickCount = 0;
+}
+
+/**
+ * @brief Handle button press with double-press detection
+ * 
+ * @param pin GPIO pin number
+ * @param state Button state structure
+ * @return 0 = no press, 1 = single press, 2 = double press
+ */
+uint8_t handleButtonPressWithDoubleClick(uint8_t pin, ButtonState& state) {
+  bool currentlyPressed = (digitalRead(pin) == LOW);
+  unsigned long now = millis();
+  
+  if (currentlyPressed && !state.isPressed) {
+    // Button just pressed - check debounce
+    if ((now - state.lastPressTime) > DEBOUNCE_DELAY_MS) {
+      state.isPressed = true;
+      state.lastPressTime = now;
+      
+      // Check if this is within double-press window
+      if (state.clickCount == 0) {
+        // First press
+        state.firstPressTime = now;
+        state.clickCount = 1;
+      } else if (state.clickCount == 1 && (now - state.firstPressTime) <= DOUBLE_PRESS_DELAY_MS) {
+        // Second press within window - double press detected
+        state.clickCount = 0;
+        return 2;  // Double press
+      }
+    }
+  } else if (!currentlyPressed && state.isPressed) {
+    // Button released
+    state.isPressed = false;
+  }
+  
+  // Check if single press timeout expired
+  if (state.clickCount == 1 && (now - state.firstPressTime) > DOUBLE_PRESS_DELAY_MS) {
+    state.clickCount = 0;
+    return 1;  // Single press
+  }
+  
+  return 0;  // No press
+}
+
+#endif // BUTTON_HANDLER_H
