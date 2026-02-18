@@ -1,16 +1,4 @@
-/* ST7789 240 x 320 display configuration for ESP32
-
-  SPI Wiring:
-    Display SCL → ESP32 GPIO 18 (or pin labeled D18)
-    Display SDA → ESP32 GPIO 23 (or pin labeled D23)
-    Display CS → ESP32 GPIO 15 (or pin labeled D15)
-    Display DC (or RS) → ESP32 GPIO 5 (or pin labeled D5)
-    Display RST (or RESET) → ESP32 GPIO 4 (or pin labeled D4)
-    Display VCC → 3.3V or 5V
-    Display GND → GND
-*/
-
-// ST7789 Display Configuration for LovyanGFX
+// ST7789 240 x 320 Display Configuration for LovyanGFX
 class LGFX : public lgfx::LGFX_Device
 {
   lgfx::Panel_ST7789 _panel_instance;
