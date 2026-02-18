@@ -13,7 +13,7 @@
   |                           | CS                            |      26       |
   |                           | RST (RESET)                   |      25       |
   |                           | BLK (Backlight)               |     3.3V      |
-  |     Si4735                |                               |               |
+  |     Si4732                |                               |               |
   |                           | (*3) RESET                    |      33       |
   |                           | (*3) SDIO                     |      21       |
   |                           | (*3) SCLK                     |      22       |
