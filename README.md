@@ -42,14 +42,14 @@ standard demodulation is used.
 ### Core Components
 
 - **ESP32 Development Module** - Main microcontroller
-- **SI4735 Radio IC** - Radio receiver chip and support components
+- **SI4732 Radio IC** - Radio receiver chip and support components
 - **ST7789 TFT Display** (240x320 pixels) - Visual interface
 - **Rotary Encoder** - Main tuning control
 - **7 Push Buttons** - Function controls
 
 ### Pin Connections
 
-#### ESP32 to SI4735
+#### ESP32 to SI4732
 - SDIO: GPIO 21
 - SCLK: GPIO 22
 - SEN: GND
@@ -415,3 +415,4 @@ Based on ATmega328 with Nokia 5110 example version by PU2CLR, Ricardo  Feb  2022
 - **Display Library**: LovyanGFX  
 - **Radio Library**: SI4735 by Ricardo Lima Caratti (PU2CLR)
 - **Encoder Library**: Ben Buxton bb
+
