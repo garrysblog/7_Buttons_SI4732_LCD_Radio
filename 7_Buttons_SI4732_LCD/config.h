@@ -38,7 +38,7 @@
 #define COMMAND_TIMEOUT_MS 1500       // Time before command mode auto-disables (Was 2500)
 #define RSSI_UPDATE_INTERVAL_MS 900   // RSSI update interval (150ms * 6)
 #define MAIN_LOOP_DELAY_MS 1          // Small delay in main loop
-#define ENCODER_COMMAND_RATE_LIMIT_MS 150  // Rate limit for encoder in command modes
+#define ENCODER_COMMAND_RATE_LIMIT_MS 250  // Rate limit for encoder in command modes
 
 // ============================================================================
 // RADIO CONFIGURATION
@@ -48,16 +48,35 @@
 #define BFO_RESET_THRESHOLD 1000      // Hz threshold for VFO/BFO adjustment
 #define BFO_STEP_SIZE 10              // BFO adjustment step size in Hz
 
+// Radio timing constants
+#define RADIO_INIT_DELAY_MS 300       // Delay after radio initialization
+#define RADIO_RESET_DELAY_MS 100      // Delay after radio reset
+#define SSB_PATCH_DELAY_MS 50         // Delay after SSB patch loading
+#define BAND_SWITCH_DELAY_MS 100      // Delay during band switching
+
 // Step position constants
 #define STEP_POSITION_HZ_THRESHOLD 5  // Positions >= 5 are Hz tuning
 #define DEFAULT_SW_STEP_POSITION 4    // Default 1 kHz step for SW bands
 
-// RSSI thresholds for S-meter
-#define RSSI_S4_THRESHOLD 2
-#define RSSI_S5_THRESHOLD 4
+// RSSI thresholds for S-meter (expanded range S0-S9+60dB)
+// S-meter calibration: Each S-unit represents approximately 6dB
+#define RSSI_S0_THRESHOLD 0   // Very weak signal
+#define RSSI_S1_THRESHOLD 1
+#define RSSI_S2_THRESHOLD 2
+#define RSSI_S3_THRESHOLD 3
+#define RSSI_S4_THRESHOLD 5
+#define RSSI_S5_THRESHOLD 8
 #define RSSI_S6_THRESHOLD 12
-#define RSSI_S7_THRESHOLD 25
-#define RSSI_S8_THRESHOLD 50
+#define RSSI_S7_THRESHOLD 20
+#define RSSI_S8_THRESHOLD 35
+#define RSSI_S9_THRESHOLD 50  // S9 baseline
+// Above S9, each 10dB is marked
+#define RSSI_S9_PLUS_10_THRESHOLD 55
+#define RSSI_S9_PLUS_20_THRESHOLD 60
+#define RSSI_S9_PLUS_30_THRESHOLD 65  // Not displayed but helps calibration
+#define RSSI_S9_PLUS_40_THRESHOLD 70
+#define RSSI_S9_PLUS_50_THRESHOLD 75  // Not displayed but helps calibration
+#define RSSI_S9_PLUS_60_THRESHOLD 80
 
 // ============================================================================
 // DISPLAY CONFIGURATION
@@ -127,7 +146,7 @@
 #define STEP_SPRITE_HEIGHT 4
 #define FREQ_UNIT_SPRITE_WIDTH 60
 #define FREQ_UNIT_SPRITE_HEIGHT 24
-#define SIGNAL_STRENGTH_SPRITE_WIDTH 140
+#define SIGNAL_STRENGTH_SPRITE_WIDTH 240 //140
 #define SIGNAL_STRENGTH_SPRITE_HEIGHT 24
 
 // ============================================================================
