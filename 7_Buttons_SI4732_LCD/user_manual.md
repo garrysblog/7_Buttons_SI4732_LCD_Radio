@@ -1,17 +1,4 @@
-  Versions
-  ========
-    1 - Based on ALL_IN_ONE7_BUTTONS_MOD15
-    
 
-  To do
-  =====
-    - Ensure no bounce with buttons
-    - Save fav freq for each band to EEPROM
-
-  Current bugs
-  ============
-    - When on SW, going from SSB to AM resets the BFO to 0 and frequency is changed if VFO is selected
-    - Increase lag when changing bands - This is a 100 millisecond (0.1 second) delay that occurs every time you switch bands in the configureRadioForBand() function.
 
   Connections
   ===========
