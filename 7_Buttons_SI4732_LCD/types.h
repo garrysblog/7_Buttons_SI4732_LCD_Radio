@@ -90,6 +90,7 @@ struct RadioState {
   bool ssbPatchLoaded;
   bool bfoEnabled;          // BFO enabled/disabled state
   bool bfoMode;             // true = adjusting BFO, false = adjusting VFO
+  bool stepJustChanged;     // true when step was just changed, needs rounding on next tune
 };
 
 /**
