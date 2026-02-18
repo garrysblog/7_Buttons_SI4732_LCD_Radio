@@ -4,7 +4,9 @@ A software-defined radio receiver for **FM, AM, Shortwave (SSB/LSB/USB), Medium 
 
 This version was based on ATmega328 with Nokia 5110 version by PU2CLR, Ricardo Feb 2022 https://github.com/pu2clr/SI4735/tree/master/examples/. It has been heavily modified with the assistance of Claude AI. It is provided under the MIT License
 
-⚠️ Experimental BFO in AM Mode: On shortwave bands, the SSB patch remains loaded even when in AM mode, keeping the BFO circuit active. While the Si4732 BFO is designed specifically for SSB demodulation, having it enabled in AM mode allows Hz-level tuning precision—though this may introduce minor audio artifacts or phase shifts that wouldn't occur in standard AM reception.
+BFO Control: BFO (Beat Frequency Oscillator) adjustment is available in LSB and USB modes for fine-tuning SSB reception. The BFO offset is 
+preserved when switching between SSB modes and restored when returning from AM mode. BFO adjustment is not available in AM or FM modes, where 
+standard demodulation is used.
 
 ---
 
@@ -135,13 +137,15 @@ This version was based on ATmega328 with Nokia 5110 version by PU2CLR, Ricardo F
 
 #### BFO (Beat Frequency Oscillator) - Separate Control
 - **Independent ±8000 Hz adjustment range**
-- Enables Hz-level precision tuning on SSB/AM modes
+- Enables Hz-level precision tuning on SSB modes (LSB/USB)
 - Two operational modes:
   - **VFO Mode**: Encoder adjusts main frequency (background: black)
   - **BFO Mode**: Encoder adjusts BFO offset (background: slate blue)
 - Visual indicator shows current offset with +/- sign
-- Press BFO Toggle button to switch between VFO/BFO adjustment modes
-- Double-press BFO Toggle to enable/disable BFO
+- **Single press** BFO button to toggle between VFO/BFO adjustment modes
+- **Double-press** BFO button to reset BFO to 0 Hz
+- BFO offset is preserved when switching between SSB modes and restored when returning from AM mode
+- **Note:** BFO adjustment is only available in LSB and USB modes (SSB patch enables proper SSB demodulation without requiring BFO adjustment for normal operation)
 
 #### Step Sizes
 - **FM**: 1 MHz → 100 kHz → 10 kHz
@@ -170,18 +174,28 @@ This version was based on ATmega328 with Nokia 5110 version by PU2CLR, Ricardo F
 
 ### AGC (Automatic Gain Control)
 
-- **AGC ON** (Index 0) - Automatic signal level management
-- **Manual Attenuation** (Index 1-37) - Manual RF gain reduction
-  - Adjustable from 0 to maximum attenuation
-  - Useful for strong signal handling and noise reduction
-  - Index > 1 indicates manual mode is active
+### AGC (Automatic Gain Control)
+- **AGC: ON** (Index 0) - Automatic signal level management with dynamic gain adjustment
+- **Manual Attenuation** (Index 1-37) - Manual RF gain control (AGC disabled)
+  - **ATT: 0** (Index 1) - Manual mode with minimum attenuation (maximum gain)
+  - **ATT: 1-36** (Index 2-37) - Increasing attenuation levels
+  - Useful for strong signal handling, preventing overload, and noise reduction
+- **Single press** AGC button to enter/exit AGC adjustment mode
+- **Double-press** AGC button to instantly reset to "AGC: ON"
+- AGC stops at limits (does not wrap around) for intuitive control
 
 ### Signal Quality Display
 
-- **S-Meter**: Visual signal strength indicator (S4 to S9+)
+### Signal Quality Display
+- **S-Meter**: Full range signal strength indicator (**S0 to S9+60dB**)
+  - Standard S-units: S0 (extremely weak) through S9 (strong)
+  - Over-S9 readings: S9+10, S9+20, S9+40, S9+60 (in dB above S9)
+- **Bar Graph**: 14-bar real-time visualization
+  - Green bars (S0-S9): Normal signal range
+  - Red bars (S9+10 to S9+60): Very strong signals - consider using attenuation
 - **RSSI Monitoring**: Updates every 900ms
-- **Bar Graph**: Real-time signal strength visualization
 - **FM Stereo Indicator**: Shows Mono/Stereo reception status
+
 
 ## User Interface
 
@@ -208,48 +222,61 @@ The 320x240 landscape display shows:
 
 ### Button Functions
 
-#### 1. Mode Button (GPIO 4)
-- Press: Cycle through demodulation modes
-  - FM → LSB → USB → AM → FM
-- SSB modes (LSB/USB) automatically load SSB patch on first use
+#### MODE Button
+- **Single press**: Cycle through demodulation modes
+  - Shortwave/MW/LW bands: AM → LSB → USB → AM
+  - FM band: Mode change disabled (FM only)
+- Mode and bandwidth display update automatically when switching
 
-#### 2. Bandwidth Button (GPIO 5)
-- Press: Enter bandwidth adjustment mode
-- Rotate encoder: Cycle through available bandwidths
-- Auto-exits after inactivity
-- Available for AM and SSB modes only
+#### BANDWIDTH Button
+- **Single press**: Enter/exit bandwidth adjustment mode
+- **While in bandwidth mode**: Rotate encoder to adjust filter bandwidth
+  - SSB (LSB/USB): 0.5 kHz, 1.0 kHz, 1.2 kHz, 2.2 kHz, 3.0 kHz, 4.0 kHz
+  - AM: 1.0 kHz, 1.8 kHz, 2.0 kHz, 2.5 kHz, 3.0 kHz, 4.0 kHz, 6.0 kHz
+- Bandwidth stops at limits (does not wrap around)
+- **Double-press**: Instantly reset to default bandwidth for mode
+- Different bandwidth settings are maintained for SSB and AM modes
 
-#### 3. Band Button (GPIO 32)
-- Press: Enter band selection mode
-- Rotate encoder: Navigate through all available bands
-- Auto-exits after inactivity
+#### BAND Button
+- **Single press**: Enter/exit band selection mode
+- **While in band mode**: Rotate encoder to cycle through bands
+  - FM → SW1-SW9 → CB → MW → LW → 2200M
+- **Double-press**: Reset to default frequency for current band
+- Last tuned frequency is remembered for each band
 
-#### 4. Seek Button (GPIO 15)
-- Press: Initiate automatic station seeking
-- Direction: Based on last encoder rotation direction
-- Stops when signal detected or band limit reached
+#### SEEK Button
+- **Single press**: Auto-scan for stations
+  - Seeks in the direction of last encoder rotation
+  - Stops when station found or band limit reached
+- Not available on FM band
 
-#### 5. AGC Button (GPIO 13)
-- Press: Enter AGC adjustment mode
-- Rotate encoder: Adjust AGC/attenuation
-  - Counter-clockwise: Enable AGC (automatic)
-  - Clockwise: Increase manual attenuation
-- Auto-exits after inactivity
+#### AGC Button
+- **Single press**: Enter/exit AGC adjustment mode
+- **While in AGC mode**: Rotate encoder to adjust gain control
+  - Turn right: Increase attenuation (quieter, reduces strong signals)
+  - Turn left: Decrease attenuation (louder, more sensitive)
+- **Double-press**: Instantly reset to "AGC: ON" (automatic mode)
+- AGC stops at limits (does not wrap around)
 
-#### 6. Step Button (GPIO 14)
-- Press: Enter step size selection mode
-- Rotate encoder: Cycle through available step sizes
-- Red triangle indicator shows current step position
-- Auto-exits after inactivity
+#### STEP Button
+- **Single press**: Enter/exit step size adjustment mode
+  - FM: 10 kHz, 100 kHz, 200 kHz
+  - MW/LW: 1 kHz, 5 kHz, 9 kHz, 10 kHz
+  - SW: 1 kHz, 5 kHz, 10 kHz, 50 kHz, 100 kHz, 500 kHz, 1 MHz
+  - Hz-precision tuning available for fine adjustments
+- Step indicator shows current position on display
+- Step stops at limits (does not wrap around)
+- **Double-press**: Instantly reset step size to default for band
+- **First encoder rotation after step change**: Rounds frequency to nearest step boundary in rotation direction
 
-#### BFO Toggle Modes
-- **Single Press**: Toggle between **VFO mode** (normal tuning) and **BFO mode** (Hz tuning)
-  - If BFO was disabled, single press re-enables it with the saved offset value
-  - If BFO is enabled, single press switches between VFO and BFO tuning modes
-  - BFO offset is preserved when switching modes
-- **Double Press**: Disable BFO and reset offset to 0 Hz
-  - Saves current BFO value for potential re-enabling
-  - Returns to normal VFO tuning
+#### BFO Button (SSB modes only)
+- **Single press**: Toggle between VFO and BFO adjustment modes
+  - VFO mode: Encoder adjusts main frequency
+  - BFO mode: Encoder adjusts BFO offset (±8000 Hz range)
+- **Double-press**: Reset BFO offset to 0 Hz
+- Visual indicator changes background color to show active mode
+- Only functional in LSB and USB modes
+- BFO offset preserved when switching between SSB modes
 
 ### Rotary Encoder Operation
 
