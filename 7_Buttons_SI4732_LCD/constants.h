@@ -21,7 +21,7 @@ const Bandwidth SSB_BANDWIDTHS[] = {
   {3, "4.0"}    // 5
 };
 const uint8_t SSB_BANDWIDTH_COUNT = 6;
-const uint8_t DEFAULT_SSB_BANDWIDTH_INDEX = 4;  // 3.0 kHz
+const uint8_t DEFAULT_SSB_BANDWIDTH_INDEX = 3;  // 2.2 kHz
 
 // ============================================================================
 // AM BANDWIDTH CONFIGURATIONS
@@ -85,7 +85,7 @@ const Band BAND_TABLE[] = {
   {"MW",  BAND_TYPE_MW, 150, 1720, 810, 1},
 
   // Long Wave band
-  {"LW",  BAND_TYPE_MW, 150, 810, 401, 1},
+  {"LW",  BAND_TYPE_LW, 150, 810, 401, 1},
   {"2200M", BAND_TYPE_LW, 150, 500, 135, 1}   // 135.7 kHz (2200m ham band)
 };
 
@@ -98,6 +98,13 @@ const uint8_t DEFAULT_BAND_INDEX = 3; //1;  // Start on 40M ham band
 
 const int8_t AGC_INDEX_MIN = 0;
 const int8_t AGC_INDEX_MAX = 37;
-const int8_t AGC_DISABLED_THRESHOLD = 1;  // Values > 1 indicate manual attenuation
+const int8_t AGC_DISABLED_THRESHOLD = 0;  // Values > 0 indicate manual mode (AGC disabled)
+
+// AGC Index mapping:
+// Index 0  = AGC: ON (automatic gain control enabled)
+// Index 1  = ATT: 0 (manual mode, minimum attenuation = maximum gain)
+// Index 2  = ATT: 1 (manual mode, attenuation level 1)
+// ...
+// Index 37 = ATT: 36 (manual mode, maximum attenuation = minimum gain)
 
 #endif // CONSTANTS_H
