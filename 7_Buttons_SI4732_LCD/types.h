@@ -33,20 +33,9 @@ enum BandType : uint8_t {
 };
 
 /**
- * @brief Active command mode (what the encoder controls)
+ * @brief Encoder/seek direction - used for tuning, seeking, and single-press step direction
  */
-enum ActiveCommand : uint8_t {
-  CMD_NONE = 0,
-  CMD_BAND,
-  CMD_AGC,
-  CMD_BANDWIDTH,
-  CMD_STEP
-};
-
-/**
- * @brief Seek direction
- */
-enum SeekDirection : uint8_t {
+enum EncoderDirection : uint8_t {
   DIRECTION_DOWN = 0,
   DIRECTION_UP = 1
 };
@@ -73,6 +62,7 @@ struct Band {
   uint16_t maximumFreq;     // Maximum frequency (in device units)
   uint16_t defaultFreq;     // Default/starting frequency
   uint16_t defaultStep;     // Default tuning step
+  RadioMode defaultMode;    // Default demodulation mode for first visit
 };
 
 /**
@@ -86,32 +76,22 @@ struct RadioState {
   int savedBFO;             // BFO value when disabled (for restoration)
   uint8_t currentBFOStep;
   int stepPosition;
-  SeekDirection seekDirection;
+  EncoderDirection encoderDirection;
   bool ssbPatchLoaded;
   bool bfoEnabled;          // BFO enabled/disabled state
   bool bfoMode;             // true = adjusting BFO, false = adjusting VFO
-  bool stepJustChanged;     // true when step was just changed, needs rounding on next tune
 };
 
 /**
- * @brief Command mode state - groups all command flags
- */
-struct CommandState {
-  ActiveCommand active;
-  bool band;
-  bool agc;
-  bool bandwidth;
-  bool step;
-};
-
-/**
- * @brief Button state for debouncing
+ * @brief Button state for debouncing and hold detection
  */
 struct ButtonState {
   unsigned long lastPressTime;
-  unsigned long firstPressTime;  // Time of first press for double-press detection
+  unsigned long firstPressTime;   // Time of first press for double-press detection
+  unsigned long pressStartTime;   // Time button went low (for hold threshold)
   bool isPressed;
-  uint8_t clickCount;            // Number of clicks detected
+  bool holdActive;                // true once button has been held past BUTTON_HOLD_THRESHOLD_MS
+  uint8_t clickCount;             // Number of clicks detected
 };
 
 /**
@@ -140,8 +120,9 @@ struct DisplayCache {
 // CONSTANTS AND LOOKUP TABLES
 // ============================================================================
 
-// Mode descriptions for display
-const char* const MODE_DESCRIPTIONS[] = {"", "LSB", "USB", "AM"};
+// Mode descriptions for display (index matches RadioMode enum values)
+// NOTE: MODE_FM (0) is handled separately in showMode() — this entry is a fallback only
+const char* const MODE_DESCRIPTIONS[] = {"FM", "LSB", "USB", "AM"};
 const uint8_t MODE_DESCRIPTION_COUNT = 4;
 
 // FM tuning step lookup table (in 10kHz units)
