@@ -60,19 +60,10 @@ RadioState radioState = {
   .savedBFO = 0,
   .currentBFOStep = BFO_STEP_SIZE,
   .stepPosition = 0,
-  .seekDirection = DIRECTION_UP,
+  .encoderDirection = DIRECTION_UP,
   .ssbPatchLoaded = false,
   .bfoEnabled = false,
-  .bfoMode = false,
-  .stepJustChanged = false
-};
-
-CommandState commandState = {
-  .active = CMD_NONE,
-  .band = false,
-  .agc = false,
-  .bandwidth = false,
-  .step = false
+  .bfoMode = false
 };
 
 AGCState agcState = {
@@ -104,19 +95,6 @@ ButtonState bfoToggleButtonState;
 // Current band selection
 uint8_t currentBandIndex = DEFAULT_BAND_INDEX;
 
-// Display update flags - tracks what needs to be redrawn
-struct {
-  bool frequency;
-  bool mode;
-  bool bandwidth;
-  bool agc;
-  bool rssi;
-  bool band;
-  bool stepIndicator;
-  bool frequencyUnit;
-  bool fullRedraw;  // Force complete display refresh
-} displayNeedsUpdate = {false};
-
 // Bandwidth indices
 int8_t ssbBandwidthIndex = DEFAULT_SSB_BANDWIDTH_INDEX;
 int8_t amBandwidthIndex = DEFAULT_AM_BANDWIDTH_INDEX;
@@ -129,15 +107,17 @@ uint8_t volume = DEFAULT_VOLUME;
 // Encoder state (modified by interrupt)
 volatile int encoderCount = 0;
 
+// Set true while any button is in hold mode — prevents encoder tuning frequency simultaneously
+bool buttonHeld = false;
+
 // Timing
-unsigned long lastCommandTime = 0;
 unsigned long lastRSSIUpdate = 0;
-unsigned long lastEncoderCommandTime = 0;  // Rate limiting for encoder in command modes
 
 // ============================================================================
-// NEW: Frequency memory for all bands
+// Per-band memory
 // ============================================================================
 uint16_t bandFrequencyMemory[BAND_COUNT];  // Store last frequency for each band
+bool bandVisited[BAND_COUNT];              // Track first-visit per band (false = not yet visited)
 
 // ============================================================================
 // FUNCTION DECLARATIONS
@@ -156,17 +136,16 @@ void handleEncoderInput();
 // Button handling
 void handleButtons();
 void handleModeButton();
-void handleBandwidthButton();
-void handleBandButton();
+void handleBandwidthButton(int8_t direction);
+void handleBandButton(int8_t direction);
 void handleSeekButton();
-void handleAGCButton();
-void handleStepButton();
+void handleAGCButton(int8_t direction);
+void handleStepButton(int8_t direction);
 void handleBFOToggleButton();
 
 // Radio control
 void switchBand(int8_t direction);
 void loadSSBPatch();
-void unloadSSBPatch();
 void configureRadioForBand();
 void cycleModeForward();
 void adjustBandwidth(int8_t direction);
@@ -182,9 +161,7 @@ long calculateDisplayFrequency();
 
 // Display functions
 void updateDisplay();
-void processDisplayUpdates();
 void showFrequency();
-void showFrequencyUnit();
 void showMode();
 void showBandwidth();
 void showAGC();
@@ -194,12 +171,9 @@ void drawLabel(LGFX_Sprite &sprite, int width, int height, const char* text,
                uint16_t bgColor, uint16_t borderColor);
 
 // Utility functions
-void resetCommandMode(bool* flagToPreserve = nullptr, bool preserveValue = false,
-                     void (*displayCallback)() = nullptr);
 const char* getModeDescription(RadioMode mode);
 bool shouldUpdateRSSI();
 void updateRSSIIfNeeded();
-void handleCommandTimeout();
 uint8_t calculateSMeterReading(uint8_t rssi);
 
 // ============================================================================
@@ -210,9 +184,10 @@ void setup() {
   Serial.begin(115200);
   Serial.println("SI4735 Radio Controller - Starting...");
   
-  // Initialize frequency memory with default frequencies
+  // Initialize frequency memory with default frequencies, and mark all bands as unvisited
   for (uint8_t i = 0; i < BAND_COUNT; i++) {
     bandFrequencyMemory[i] = BAND_TABLE[i].defaultFreq;
+    bandVisited[i] = false;
   }
   
   setupHardware();
@@ -231,10 +206,6 @@ void loop() {
   handleEncoderInput();
   handleButtons();
   updateRSSIIfNeeded();
-  handleCommandTimeout();
-  
-  // Process any pending display updates
-  processDisplayUpdates();
   
   delay(MAIN_LOOP_DELAY_MS);
 }
@@ -312,11 +283,12 @@ void showSplashScreen() {
 void initializeRadio() {
   radio.getDeviceI2CAddress(RESET_PIN);
   radio.setup(RESET_PIN, 0, 1, SI473X_ANALOG_AUDIO);
-  delay(RADIO_INIT_DELAY_MS);
+  delay(300);
   
   configureRadioForBand();
   radio.setVolume(volume);
-  
+  //radio.setTuneFrequencyFast(1);  // Fast tuning: 0 = Precision mode, 1 = Fast mode
+
   updateDisplay();
 }
 
@@ -333,50 +305,14 @@ void IRAM_ATTR encoderInterruptHandler() {
 
 void handleEncoderInput() {
   if (encoderCount == 0) return;
+  if (buttonHeld) return;  // A button hold is consuming encoderCount directly — don't also tune
   
   int8_t direction = encoderCount;
   encoderCount = 0;
   
-  // Rate limiting for command modes to prevent over-sensitivity
-  // Normal tuning doesn't need rate limiting
-  if (commandState.active != CMD_NONE) {
-    unsigned long now = millis();
-    if ((now - lastEncoderCommandTime) < ENCODER_COMMAND_RATE_LIMIT_MS) {
-      return;  // Too soon, ignore this encoder input
-    }
-    lastEncoderCommandTime = now;
-  }
-  
-  // Route encoder input based on active command
-  switch(commandState.active) {
-    case CMD_STEP:
-      adjustStepPosition(direction);
-      break;
-      
-    case CMD_AGC:
-      adjustAGC(direction);
-      break;
-      
-    case CMD_BANDWIDTH:
-      adjustBandwidth(direction);
-      break;
-      
-    case CMD_BAND:
-      switchBand(direction);
-      break;
-      
-    case CMD_NONE:
-    default:
-      // Normal tuning (no rate limiting needed)
-      tuneFrequency(direction);
-      break;
-  }
-  
-  // Set display update flag for frequency
-  displayNeedsUpdate.frequency = true;
-  
-  // Process any pending display updates
-  processDisplayUpdates();
+  // Normal tuning — button hold modes consume encoderCount directly in handleButtons()
+  tuneFrequency(direction);
+  showFrequency();
 }
 
 // ============================================================================
@@ -384,155 +320,133 @@ void handleEncoderInput() {
 // ============================================================================
 
 void handleButtons() {
-  // Check BFO toggle button
+  // BFO toggle — double-press resets BFO (SSB mode) or frequency (VFO mode), on any band
   handleBFOToggleButton();
-  
-  // Handle band button with double-press support
-  uint8_t bandPress = handleButtonPressWithDoubleClick(BAND_BUTTON, bandButtonState);
-  if (bandPress == 1) {
-    handleBandButton();
-  } else if (bandPress == 2) {
-    // Double press - reset to default frequency
-    const Band& band = BAND_TABLE[currentBandIndex];
-    radioState.currentFrequency = band.defaultFreq;
-    bandFrequencyMemory[currentBandIndex] = band.defaultFreq;  // Update memory
-    radio.setFrequency(radioState.currentFrequency);
-    displayNeedsUpdate.frequency = true;
-  }
-  
-  // Handle AGC button with double-press support
-  uint8_t agcPress = handleButtonPressWithDoubleClick(AGC_BUTTON, agcButtonState);
-  if (agcPress == 1) {
-    handleAGCButton();
-  } else if (agcPress == 2) {
-    // Double press - reset to AGC: ON
-    agcState.index = 0;
-    agcState.disabled = false;
-    agcState.attenuation = 0;
-    radio.setAutomaticGainControl(agcState.disabled, agcState.attenuation);
-    displayNeedsUpdate.agc = true;
-  }
-  
-  // Handle bandwidth button with double-press support
-  uint8_t bwPress = handleButtonPressWithDoubleClick(BANDWIDTH_BUTTON, bandwidthButtonState);
-  if (bwPress == 1) {
-    handleBandwidthButton();
-  } else if (bwPress == 2) {
-    // Double press - reset to default bandwidth for current mode
-    if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
-      ssbBandwidthIndex = DEFAULT_SSB_BANDWIDTH_INDEX;
-      radio.setSSBAudioBandwidth(SSB_BANDWIDTHS[ssbBandwidthIndex].deviceIndex);
-    } else if (radioState.currentMode == MODE_AM) {
-      amBandwidthIndex = DEFAULT_AM_BANDWIDTH_INDEX;
-      radio.setBandwidth(AM_BANDWIDTHS[amBandwidthIndex].deviceIndex, 1);
+
+  // --- BAND button: single-press steps band, hold+encoder scrolls ---
+  {
+    int8_t result = handleButtonSingleOrHeld(BAND_BUTTON, bandButtonState, encoderCount);
+    if (result == 1) {
+      handleBandButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
+    } else if (result != 0) {
+      handleBandButton(result);
     }
-    displayNeedsUpdate.bandwidth = true;
   }
-  
-  // Other buttons use regular press detection
+
+  // --- BANDWIDTH button ---
+  {
+    int8_t result = handleButtonSingleOrHeld(BANDWIDTH_BUTTON, bandwidthButtonState, encoderCount);
+    if (result == 1) {
+      handleBandwidthButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
+    } else if (result != 0) {
+      handleBandwidthButton(result);
+    }
+  }
+
+  // --- SEEK button — unchanged simple press ---
   if (handleButtonPress(SEEK_BUTTON, seekButtonState)) {
     handleSeekButton();
   }
-  
-  // Handle step button with double-press support
-  uint8_t stepPress = handleButtonPressWithDoubleClick(STEP_BUTTON, stepButtonState);
-  if (stepPress == 1) {
-    handleStepButton();
-  } else if (stepPress == 2) {
-    // Double press - reset to default step for current band
-    const Band& band = BAND_TABLE[currentBandIndex];
-    
-    if (band.type == BAND_TYPE_FM) {
-      radioState.stepPosition = 0;  // Default FM step
-    } else if (band.type == BAND_TYPE_MW || band.type == BAND_TYPE_LW) {
-      radioState.stepPosition = 2;  // Default 1 kHz step for MW/LW
-    } else {
-      radioState.stepPosition = DEFAULT_SW_STEP_POSITION;  // Default 1 kHz for SW
+
+  // --- AGC button ---
+  {
+    int8_t result = handleButtonSingleOrHeld(AGC_BUTTON, agcButtonState, encoderCount);
+    if (result == 1) {
+      handleAGCButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
+    } else if (result != 0) {
+      handleAGCButton(result);
     }
-    
-    updateFrequencyStep();
-    displayNeedsUpdate.stepIndicator = true;
   }
-  
+
+  // --- STEP button ---
+  {
+    int8_t result = handleButtonSingleOrHeld(STEP_BUTTON, stepButtonState, encoderCount);
+    if (result == 1) {
+      handleStepButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
+    } else if (result != 0) {
+      handleStepButton(result);
+    }
+  }
+
+  // --- MODE button — unchanged simple press ---
   if (handleButtonPress(MODE_BUTTON, modeButtonState)) {
     handleModeButton();
   }
+
+  // Update global hold flag — true if any button is currently in hold mode.
+  // handleEncoderInput() reads this to avoid tuning frequency simultaneously.
+  buttonHeld = bandButtonState.holdActive    ||
+               bandwidthButtonState.holdActive ||
+               agcButtonState.holdActive      ||
+               stepButtonState.holdActive;
 }
 
 void handleModeButton() {
-  const Band& band = BAND_TABLE[currentBandIndex];
-  
-  // Mode button does nothing on FM band
-  if (band.type == BAND_TYPE_FM) {
-    return;
-  }
-  
   cycleModeForward();
-  lastCommandTime = millis();
 }
 
-void handleBandwidthButton() {
-  commandState.bandwidth = !commandState.bandwidth;
-  commandState.active = commandState.bandwidth ? CMD_BANDWIDTH : CMD_NONE;
-  resetCommandMode(&commandState.bandwidth, commandState.bandwidth, nullptr);
-  displayNeedsUpdate.bandwidth = true;
-  lastCommandTime = millis();
+void handleBandwidthButton(int8_t direction) {
+  adjustBandwidth(direction);
 }
 
-void handleBandButton() {
-  // Save current frequency before switching
+void handleBandButton(int8_t direction) {
   bandFrequencyMemory[currentBandIndex] = radioState.currentFrequency;
-  
-  commandState.band = !commandState.band;
-  commandState.active = commandState.band ? CMD_BAND : CMD_NONE;
-  resetCommandMode(&commandState.band, commandState.band, nullptr);
-  lastCommandTime = millis();
+  switchBand(direction);
 }
 
 void handleSeekButton() {
   performSeek();
 }
 
-void handleAGCButton() {
-  commandState.agc = !commandState.agc;
-  commandState.active = commandState.agc ? CMD_AGC : CMD_NONE;
-  resetCommandMode(&commandState.agc, commandState.agc, nullptr);
-  displayNeedsUpdate.agc = true;
-  lastCommandTime = millis();
+void handleAGCButton(int8_t direction) {
+  adjustAGC(direction);
 }
 
-void handleStepButton() {
-  commandState.step = !commandState.step;
-  commandState.active = commandState.step ? CMD_STEP : CMD_NONE;
-  resetCommandMode(&commandState.step, commandState.step, nullptr);
-  displayNeedsUpdate.stepIndicator = true;
-  lastCommandTime = millis();
+void handleStepButton(int8_t direction) {
+  adjustStepPosition(direction);
 }
 
 void handleBFOToggleButton() {
   const Band& band = BAND_TABLE[currentBandIndex];
-  
-  // BFO toggle only works in LSB or USB modes
-  if (radioState.currentMode != MODE_LSB && radioState.currentMode != MODE_USB) {
-    return;  // Do nothing on AM or FM
-  }
-  
-  // Handle single and double press
+
   uint8_t press = handleButtonPressWithDoubleClick(BFO_TOGGLE_BUTTON, bfoToggleButtonState);
-  
+
   if (press == 2) {
-    // Double press - reset BFO to 0
-    radioState.currentBFO = 0;
-    radioState.savedBFO = 0;
-    radio.setSSBBfo(0);
-    displayNeedsUpdate.frequency = true;
-    displayNeedsUpdate.stepIndicator = true;
+    // Double press behaviour depends on current tuning mode:
+    // - BFO mode active → reset BFO offset to 0
+    // - VFO mode (or BFO disabled) → reset frequency to band default
+    if (radioState.bfoEnabled && radioState.bfoMode) {
+      // Reset BFO to 0
+      radioState.currentBFO = 0;
+      radioState.savedBFO = 0;
+      radio.setSSBBfo(0);
+      showFrequency();
+      showStepIndicator();
+    } else {
+      // Reset frequency to band default
+      radioState.currentFrequency = band.defaultFreq;
+      bandFrequencyMemory[currentBandIndex] = band.defaultFreq;
+      radio.setFrequency(radioState.currentFrequency);
+      showFrequency();
+    }
   }
   else if (press == 1) {
-    // Single press - toggle between VFO and BFO mode
-    radioState.bfoMode = !radioState.bfoMode;
-    displayNeedsUpdate.frequency = true;
-    displayNeedsUpdate.stepIndicator = true;
+    // Single press only meaningful on SW bands in SSB mode
+    if (band.type != BAND_TYPE_SW) return;
+    if (radioState.currentMode != MODE_LSB && radioState.currentMode != MODE_USB) return;
+
+    if (!radioState.bfoEnabled) {
+      // BFO was disabled — re-enable with saved value
+      radioState.bfoEnabled = true;
+      radioState.bfoMode = true;
+      radioState.currentBFO = radioState.savedBFO;
+      radio.setSSBBfo(radioState.currentBFO);
+    } else {
+      // BFO enabled — toggle between VFO and BFO adjustment modes
+      radioState.bfoMode = !radioState.bfoMode;
+    }
+    showFrequency();
+    showStepIndicator();
   }
 }
 
@@ -543,8 +457,12 @@ void handleBFOToggleButton() {
 void switchBand(int8_t direction) {
   ASSERT(currentBandIndex < BAND_COUNT, "Invalid band index");
   
-  // Save current frequency
+  // Save current frequency and BFO state
   bandFrequencyMemory[currentBandIndex] = radioState.currentFrequency;
+  
+  // Get current band type to check if we're leaving/entering SW
+  const Band& currentBand = BAND_TABLE[currentBandIndex];
+  bool wasOnSW = (currentBand.type == BAND_TYPE_SW);
   
   // Switch band
   if (direction > 0) {
@@ -553,36 +471,36 @@ void switchBand(int8_t direction) {
     currentBandIndex = (currentBandIndex > 0) ? currentBandIndex - 1 : BAND_COUNT - 1;
   }
   
+  // Get new band type
+  const Band& newBand = BAND_TABLE[currentBandIndex];
+  bool nowOnSW = (newBand.type == BAND_TYPE_SW);
+  
+  // Handle BFO state transitions
+  if (wasOnSW && !nowOnSW) {
+    // Leaving SW band - disable BFO display but remember the value
+    radioState.bfoEnabled = false;
+    radioState.bfoMode = false;
+  } else if (!wasOnSW && nowOnSW) {
+    // Entering SW band - restore BFO state if it was previously enabled
+    // BFO will be re-applied in configureRadioForBand
+  }
+  
   configureRadioForBand();
-  lastCommandTime = millis();
 }
 
 void loadSSBPatch() {
-  Serial.println("Loading SSB patch...");
-  
   const uint16_t contentSize = sizeof(ssb_patch_content);
   const uint16_t cmd0x15Size = sizeof(cmd_0x15);
   
   radio.setI2CFastModeCustom(500000);
   radio.queryLibraryId();
   radio.patchPowerUp();
-  delay(SSB_PATCH_DELAY_MS);
+  delay(50);
   radio.downloadCompressedPatch(ssb_patch_content, contentSize, cmd_0x15, cmd0x15Size);
   radio.setSSBConfig(SSB_BANDWIDTHS[ssbBandwidthIndex].deviceIndex, 1, 0, 1, 0, 1);
   radio.setI2CStandardMode();
   
   radioState.ssbPatchLoaded = true;
-  Serial.println("SSB patch loaded successfully");
-}
-
-void unloadSSBPatch() {
-  Serial.println("Unloading SSB patch...");
-  
-  // The Si4735 requires a reset/powerup to unload the patch
-  // We'll just mark it as unloaded and reconfigure for AM
-  radioState.ssbPatchLoaded = false;
-  
-  Serial.println("SSB patch unloaded");
 }
 
 void configureRadioForBand() {
@@ -600,9 +518,10 @@ void configureRadioForBand() {
     radio.setFM(band.minimumFreq, band.maximumFreq, storedFreq, band.defaultStep);
     radio.setSeekFmLimits(band.minimumFreq, band.maximumFreq);
     radioState.ssbPatchLoaded = false;
-    radioState.stepPosition = 2;  // Default to 100kHz step
+    radioState.stepPosition = 2;  // Default to 10kHz step (FM_STEP_TABLE[2] = 10)
     
     // Disable BFO on FM
+    radioState.bfoEnabled = false;
     radioState.bfoMode = false;
   }
   else {
@@ -611,41 +530,64 @@ void configureRadioForBand() {
       (band.type == BAND_TYPE_MW || band.type == BAND_TYPE_LW) ? 0 : 1
     );
     
-    // Configure based on current mode
-    // SSB patch should only be loaded for LSB/USB modes
-    if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
-      // SSB mode - ensure patch is loaded
+    bool isSWBand = (band.type == BAND_TYPE_SW);
+    bool isSSBMode = (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB);
+    
+    if (isSWBand && isSSBMode) {
+      // SW band in LSB/USB mode - use SSB demodulator
       if (!radioState.ssbPatchLoaded) {
         loadSSBPatch();
       }
-      radio.setSSB(band.minimumFreq, band.maximumFreq, storedFreq, 
+      radio.setSSB(band.minimumFreq, band.maximumFreq, storedFreq,
                    band.defaultStep, radioState.currentMode);
       radio.setSSBAutomaticVolumeControl(0);
       radio.setSSBBfo(radioState.currentBFO);
     }
     else {
-      // AM mode - standard AM reception
-      radioState.currentMode = MODE_AM;
-      
-      // If SSB was loaded, we need to reconfigure to standard AM
+      // AM mode on any band (including SW), or MW/LW - use standard AM demodulator
+      // If SSB patch was previously loaded, it must be unloaded by power-cycling the chip.
+      // radio.setAM() handles this internally via a reset/powerup sequence.
       if (radioState.ssbPatchLoaded) {
-        // Reset the radio to unload SSB patch
-        radio.reset();
-        delay(RADIO_RESET_DELAY_MS);
-        radio.setup(RESET_PIN, 0, 1, SI473X_ANALOG_AUDIO);
-        delay(BAND_SWITCH_DELAY_MS);
+        // Force a clean AM setup - the SI4735 library's setAM() will re-initialise
+        // the chip, clearing the SSB patch from RAM.
         radioState.ssbPatchLoaded = false;
       }
       
+      // Ensure we are in AM mode when switching to a non-SSB configuration
+      if (radioState.currentMode != MODE_AM) {
+        radioState.currentMode = MODE_AM;
+      }
+      
       radio.setAM(band.minimumFreq, band.maximumFreq, storedFreq, band.defaultStep);
-      radioState.bfoMode = false;  // Disable BFO mode in AM
+      
+      if (!isSWBand) {
+        // Disable BFO on non-SW bands
+        radioState.bfoEnabled = false;
+        radioState.bfoMode = false;
+      }
     }
     
     // Soft mute configuration
+    // Set the Am Soft Mute Max Attenuation. The value 0 disables soft mute. 1-8 (Default is 8 dB)
     radio.setAmSoftMuteMaxAttenuation(0); 
+
+    // Set the attack and decay rates when entering or leaving soft mute 1-255 (Default is ~64 - [64 x 4.35 = 278])
     radio.setAMSoftMuteRate(64);
+
+    // Set the AM attenuation slope during soft mute. 1-5 (Default is 1)
     radio.setAMSoftMuteSlop(1);
+
+    // Set the FM Soft Mute Max Attenuation. The value 0 disables soft mute on FM mode.
     radio.setFmSoftMuteMaxAttenuation(16);
+
+    // Set the soft mute release rate. 1–32767 (default is 8192) (approximately 8000 dB/s)
+    //radio.setAMSoftMuteReleaseRate(8192);
+
+    // Set the soft mute attack rate. 1–32767 (default is 8192) (approximately 8000 dB/s)
+    //radio.setAMSoftMuteAttackRate(8192);
+
+    // Set the SNR threshold to engage soft mute. 0-63 (default is 8) 0 is disabled     
+    //radio.setAMSoftMuteSnrThreshold(8);
     
     // AGC configuration
     radio.setAutomaticGainControl(agcState.disabled, agcState.attenuation);
@@ -660,10 +602,36 @@ void configureRadioForBand() {
     }
   }
   
-  //delay(100);  // original
-  radioState.currentFrequency = storedFreq;
-  radioState.currentStep = band.defaultStep;
+  delay(100);
+  radioState.currentFrequency = storedFreq;  // Use stored frequency instead of default
   currentRSSI = 0;
+
+  // On first visit to this band, apply the band's default mode.
+  // Subsequent visits preserve whatever mode the user last selected.
+  if (!bandVisited[currentBandIndex]) {
+    bandVisited[currentBandIndex] = true;
+    // Only apply if the defaultMode differs from what was just configured —
+    // FM and non-SW bands are already set correctly by the block above.
+    if (band.type == BAND_TYPE_SW && radioState.currentMode != band.defaultMode) {
+      radioState.currentMode = band.defaultMode;
+      if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
+        // Need SSB patch for SSB default modes
+        if (!radioState.ssbPatchLoaded) {
+          loadSSBPatch();
+        }
+        radio.setSSB(band.minimumFreq, band.maximumFreq, storedFreq,
+                     band.defaultStep, radioState.currentMode);
+        radio.setSSBBfo(radioState.currentBFO);
+      }
+      // AM default on SW is already configured correctly above — no extra call needed
+    }
+  }
+
+  // Apply the correct step for this band to both state and radio chip.
+  // Must be called explicitly here so FM bands also get radio.setFrequencyStep()
+  // applied — updateDisplay() skips showStepIndicator() for FM, which previously
+  // left the chip's step register stale when switching to FM from another band.
+  updateFrequencyStep();
   
   updateDisplay();
 }
@@ -671,87 +639,61 @@ void configureRadioForBand() {
 void cycleModeForward() {
   const Band& band = BAND_TABLE[currentBandIndex];
   
-  if (band.type == BAND_TYPE_FM) {
-    return;  // Can't change mode on FM
+  if (band.type != BAND_TYPE_SW) {
+    return;  // Mode cycling only available on SW bands (FM/MW/LW are AM/FM only)
   }
-  
-  RadioMode oldMode = radioState.currentMode;
   
   // Cycle: AM → LSB → USB → AM
   switch(radioState.currentMode) {
     case MODE_AM:
       radioState.currentMode = MODE_LSB;
-      // Restore saved BFO value
-      radioState.currentBFO = radioState.savedBFO;
       break;
     case MODE_LSB:
       radioState.currentMode = MODE_USB;
-      // Keep current BFO value
       break;
     case MODE_USB:
       radioState.currentMode = MODE_AM;
-      // Save BFO value
-      radioState.savedBFO = radioState.currentBFO;
-      radioState.bfoMode = false;  // Exit BFO mode
       break;
     default:
       radioState.currentMode = MODE_AM;
-      radioState.bfoMode = false;
       break;
   }
   
-  // Load/unload SSB patch as needed
-  if ((oldMode == MODE_AM) && 
-      (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB)) {
-    // Entering SSB mode - load patch
-    if (!radioState.ssbPatchLoaded) {
-      loadSSBPatch();
+  showMode();
+  
+  // Reconfigure radio with new mode (only for SW bands)
+  if (band.type == BAND_TYPE_SW) {
+    if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
+      // Switching TO an SSB mode - load patch if needed and engage SSB demodulator
+      if (!radioState.ssbPatchLoaded) {
+        loadSSBPatch();
+      }
+      radio.setSSB(band.minimumFreq, band.maximumFreq, radioState.currentFrequency,
+                   radioState.currentStep, radioState.currentMode);
+      radio.setSSBBfo(radioState.currentBFO);
+      showFrequency();  // Refresh display so BFO sprite appears immediately
     }
-    radio.setSSB(band.minimumFreq, band.maximumFreq, radioState.currentFrequency,
-                 radioState.currentStep, radioState.currentMode);
-    radio.setSSBBfo(radioState.currentBFO);
-  }
-  else if ((oldMode == MODE_LSB || oldMode == MODE_USB) && 
-           (radioState.currentMode == MODE_AM)) {
-    // Exiting SSB mode - unload patch and switch to AM
-    if (radioState.ssbPatchLoaded) {
-      // Reset radio to unload patch
-      radio.reset();
-      delay(RADIO_RESET_DELAY_MS);
-      radio.setup(RESET_PIN, 0, 1, SI473X_ANALOG_AUDIO);
-      delay(BAND_SWITCH_DELAY_MS);
+    else {
+      // Switching BACK to AM mode on SW - disengage SSB demodulator entirely.
+      // The SSB patch lives in the chip's RAM; calling setAM() triggers a chip
+      // re-initialisation that clears it, so reception returns to true AM demodulation.
       radioState.ssbPatchLoaded = false;
-      
-      // Reconfigure for AM
-      radio.setTuneFrequencyAntennaCapacitor(
-        (band.type == BAND_TYPE_MW || band.type == BAND_TYPE_LW) ? 0 : 1
-      );
+      radioState.bfoEnabled = false;
+      radioState.bfoMode = false;
       radio.setAM(band.minimumFreq, band.maximumFreq, radioState.currentFrequency,
                   radioState.currentStep);
-      radio.setAmSoftMuteMaxAttenuation(0);
-      radio.setAutomaticGainControl(agcState.disabled, agcState.attenuation);
-      radio.setVolume(volume);
+      showFrequency();  // Refresh display now BFO is gone
     }
   }
-  else if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
-    // Switching between LSB and USB - just update mode
-    radio.setSSB(band.minimumFreq, band.maximumFreq, radioState.currentFrequency,
-                 radioState.currentStep, radioState.currentMode);
-    radio.setSSBBfo(radioState.currentBFO);
-  }
-  
-  // Set display update flags
-  displayNeedsUpdate.mode = true;
-  displayNeedsUpdate.frequency = true;
-  displayNeedsUpdate.bandwidth = true;
+  // For non-SW bands, do nothing (mode cycling doesn't affect frequency)
 }
 
 void adjustBandwidth(int8_t direction) {
   if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
     // SSB bandwidth
     ssbBandwidthIndex += direction;
-    // Clamp instead of wrapping
-    ssbBandwidthIndex = constrain(ssbBandwidthIndex, 0, SSB_BANDWIDTH_COUNT - 1);
+    if (ssbBandwidthIndex >= SSB_BANDWIDTH_COUNT) ssbBandwidthIndex = 0;
+    if (ssbBandwidthIndex < 0) ssbBandwidthIndex = SSB_BANDWIDTH_COUNT - 1;
     
     radio.setSSBAudioBandwidth(SSB_BANDWIDTHS[ssbBandwidthIndex].deviceIndex);
     
@@ -767,35 +709,35 @@ void adjustBandwidth(int8_t direction) {
   else if (radioState.currentMode == MODE_AM) {
     // AM bandwidth
     amBandwidthIndex += direction;
-    // Clamp instead of wrapping
-    amBandwidthIndex = constrain(amBandwidthIndex, 0, AM_BANDWIDTH_COUNT - 1);
+    if (amBandwidthIndex >= AM_BANDWIDTH_COUNT) amBandwidthIndex = 0;
+    if (amBandwidthIndex < 0) amBandwidthIndex = AM_BANDWIDTH_COUNT - 1;
     
     radio.setBandwidth(AM_BANDWIDTHS[amBandwidthIndex].deviceIndex, 1);
   }
   
-  displayNeedsUpdate.bandwidth = true;
-  lastCommandTime = millis();
+  showBandwidth();
 }
 
 void adjustAGC(int8_t direction) {
   agcState.index += direction;
   
-  // Clamp instead of wrapping for more intuitive behavior
-  agcState.index = constrain(agcState.index, AGC_INDEX_MIN, AGC_INDEX_MAX);
+  if (agcState.index < AGC_INDEX_MIN) {
+    agcState.index = AGC_INDEX_MAX;
+  }
+  else if (agcState.index > AGC_INDEX_MAX) {
+    agcState.index = AGC_INDEX_MIN;
+  }
   
-  // AGC is disabled when index > 0 (manual attenuation mode)
-  agcState.disabled = (agcState.index > 0);
+  agcState.disabled = (agcState.index > AGC_DISABLED_THRESHOLD);
   
-  // Calculate attenuation value for manual mode
-  if (agcState.index > 1) {
-    agcState.attenuation = agcState.index - 1;  // Index 2=ATT:1, Index 3=ATT:2, etc.
+  if (agcState.index > AGC_DISABLED_THRESHOLD) {
+    agcState.attenuation = agcState.index - 1;
   } else {
-    agcState.attenuation = 0;  // Index 0=AGC:ON, Index 1=ATT:0
+    agcState.attenuation = 0;
   }
   
   radio.setAutomaticGainControl(agcState.disabled, agcState.attenuation);
-  displayNeedsUpdate.agc = true;
-  lastCommandTime = millis();
+  showAGC();
 }
 
 void adjustStepPosition(int8_t direction) {
@@ -824,12 +766,7 @@ void adjustStepPosition(int8_t direction) {
   }
   
   updateFrequencyStep();
-  
-  // Set flag to indicate step just changed - next frequency adjustment will round
-  radioState.stepJustChanged = true;
-  
-  displayNeedsUpdate.stepIndicator = true;
-  lastCommandTime = millis();
+  showStepIndicator();
 }
 
 void performSeek() {
@@ -839,8 +776,10 @@ void performSeek() {
     showFrequency();
   };
   
-  radio.seekStationProgress(seekCallback, radioState.seekDirection);
+  radio.seekStationProgress(seekCallback, radioState.encoderDirection);
   radioState.currentFrequency = radio.getFrequency();
+  
+  // Update frequency memory
   bandFrequencyMemory[currentBandIndex] = radioState.currentFrequency;
 }
 
@@ -871,74 +810,29 @@ void updateFrequencyStep() {
 }
 
 void tuneFrequency(int8_t direction) {
+  const Band& band = BAND_TABLE[currentBandIndex];
+  
   // Check if we should use BFO tuning
   // BFO tuning is active when:
-  // 1. We're in LSB or USB mode AND
-  // 2. We're in BFO adjustment mode (not VFO mode)
-  bool useBFOTuning = (radioState.currentMode == MODE_LSB || 
-                       radioState.currentMode == MODE_USB) && 
+  // 1. We're on a SW band AND
+  // 2. BFO is enabled AND
+  // 3. We're in BFO mode (not VFO mode)
+  bool useBFOTuning = (band.type == BAND_TYPE_SW) && 
+                      radioState.bfoEnabled && 
                       radioState.bfoMode;
   
   if (useBFOTuning) {
     tuneBFO(direction);
   } else {
-    // Check if we need to round to step boundary (after step change)
-    if (radioState.stepJustChanged) {
-      // Calculate the rounded frequency based on direction
-      uint16_t currentFreq = radioState.currentFrequency;
-      uint16_t step = radioState.currentStep;
-      uint16_t newFreq;
-      
-      if (direction > 0) {
-        // Round UP to next step boundary
-        // Calculate how far we are into the current step
-        uint16_t remainder = currentFreq % step;
-        if (remainder == 0) {
-          // Already on boundary, just move forward normally
-          newFreq = currentFreq + step;
-        } else {
-          // Round up to next boundary
-          newFreq = currentFreq + (step - remainder);
-        }
-      } else {
-        // Round DOWN to previous step boundary
-        // Calculate how far we are into the current step
-        uint16_t remainder = currentFreq % step;
-        if (remainder == 0) {
-          // Already on boundary, just move backward normally
-          newFreq = currentFreq - step;
-        } else {
-          // Round down to previous boundary
-          newFreq = currentFreq - remainder;
-        }
-      }
-      
-      // Apply band limits
-      const Band& band = BAND_TABLE[currentBandIndex];
-      if (newFreq < band.minimumFreq) {
-        newFreq = band.minimumFreq;
-      } else if (newFreq > band.maximumFreq) {
-        newFreq = band.maximumFreq;
-      }
-      
-      // Set the new frequency
-      radio.setFrequency(newFreq);
-      radioState.currentFrequency = newFreq;
-      radioState.seekDirection = (direction > 0) ? DIRECTION_UP : DIRECTION_DOWN;
-      
-      // Clear the flag - rounding is done, subsequent adjustments will be normal
-      radioState.stepJustChanged = false;
+    // Normal VFO tuning
+    if (direction > 0) {
+      radio.frequencyUp();
+      radioState.encoderDirection = DIRECTION_UP;
     } else {
-      // Normal VFO tuning (no rounding needed)
-      if (direction > 0) {
-        radio.frequencyUp();
-        radioState.seekDirection = DIRECTION_UP;
-      } else {
-        radio.frequencyDown();
-        radioState.seekDirection = DIRECTION_DOWN;
-      }
-      radioState.currentFrequency = radio.getFrequency();
+      radio.frequencyDown();
+      radioState.encoderDirection = DIRECTION_DOWN;
     }
+    radioState.currentFrequency = radio.getFrequency();
     
     // Update frequency memory
     bandFrequencyMemory[currentBandIndex] = radioState.currentFrequency;
@@ -946,6 +840,7 @@ void tuneFrequency(int8_t direction) {
 }
 
 void tuneBFO(int8_t direction) {
+  // MODIFIED: BFO now operates independently without affecting VFO
   int newBFO = (direction > 0) ? 
                (radioState.currentBFO + BFO_STEP_SIZE) :
                (radioState.currentBFO - BFO_STEP_SIZE);
@@ -958,12 +853,15 @@ void tuneBFO(int8_t direction) {
   }
   
   radioState.currentBFO = newBFO;
-  radioState.savedBFO = newBFO;  // Always keep savedBFO in sync
+  radioState.savedBFO = newBFO;  // Save for potential re-enable
   radio.setSSBBfo(radioState.currentBFO);
 }
 
+// ****************** IS THIS NEEDED ******************
 long calculateDisplayFrequency() {
-  // Display frequency is ALWAYS just the VFO frequency
+  const Band& band = BAND_TABLE[currentBandIndex];
+  
+  // MODIFIED: Display frequency is ALWAYS just the VFO frequency
   // BFO only affects the actual received frequency, not the display
   return (long)radioState.currentFrequency * 1000L;
 }
@@ -973,94 +871,17 @@ long calculateDisplayFrequency() {
 // ============================================================================
 
 void updateDisplay() {
-  const Band& band = BAND_TABLE[currentBandIndex];
+  display.fillScreen(COLOR_BACKGROUND);
   
-  // Reset display cache to force redraw of everything
+  // Reset display cache to force redraw
   displayCache.bandIndex = 255;
   displayCache.frequency = 0xFFFF;
-  displayCache.mode = (RadioMode)255;
+  displayCache.mode = (RadioMode)255;  // Force mode redraw
   displayCache.rssi = 255;
-  displayCache.bandwidth = -1;
-  displayCache.agc = -1;
   
-  // Set flags for what needs to be drawn based on band type
-  displayNeedsUpdate.band = true;
-  displayNeedsUpdate.mode = true;
-  displayNeedsUpdate.frequency = true;
-  displayNeedsUpdate.frequencyUnit = true;
-  displayNeedsUpdate.rssi = true;
+  showMode();
   
-  // Non-FM bands show additional controls
-  if (band.type != BAND_TYPE_FM) {
-    displayNeedsUpdate.stepIndicator = true;
-    displayNeedsUpdate.agc = true;
-    displayNeedsUpdate.bandwidth = true;
-  } else {
-    // FM band - hide AGC and bandwidth sprites by filling with background colour
-    agcSprite.fillSprite(COLOR_BACKGROUND);
-    agcSprite.pushSprite(AGC_LABEL_X_POS, AGC_LABEL_Y_POS);
-    
-    bandwidthSprite.fillSprite(COLOR_BACKGROUND);
-    bandwidthSprite.pushSprite(BANDWIDTH_LABEL_X_POS, BANDWIDTH_LABEL_Y_POS);
-    
-    // Step indicator IS still relevant on FM - update it
-    displayNeedsUpdate.stepIndicator = true;
-    
-    // Invalidate cache so they redraw properly when leaving FM
-    displayCache.bandwidth = -1;
-    displayCache.agc = -1;
-  }
-  
-  // Process all pending display updates
-  processDisplayUpdates();
-}
-
-void processDisplayUpdates() {
-  // Process display updates based on flags
-  // This centralizes all display logic in one place
-  
-  if (displayNeedsUpdate.band) {
-    showMode();  // Shows band name
-    displayNeedsUpdate.band = false;
-  }
-  
-  if (displayNeedsUpdate.mode) {
-    showMode();  // Shows mode (LSB/USB/AM/Stereo/Mono)
-    displayNeedsUpdate.mode = false;
-  }
-  
-  if (displayNeedsUpdate.frequencyUnit) {
-    showFrequencyUnit();
-    displayNeedsUpdate.frequencyUnit = false;
-  }
-  
-  if (displayNeedsUpdate.frequency) {
-    showFrequency();
-    displayNeedsUpdate.frequency = false;
-  }
-  
-  if (displayNeedsUpdate.stepIndicator) {
-    showStepIndicator();
-    displayNeedsUpdate.stepIndicator = false;
-  }
-  
-  if (displayNeedsUpdate.agc) {
-    showAGC();
-    displayNeedsUpdate.agc = false;
-  }
-  
-  if (displayNeedsUpdate.bandwidth) {
-    showBandwidth();
-    displayNeedsUpdate.bandwidth = false;
-  }
-  
-  if (displayNeedsUpdate.rssi) {
-    showRSSI();
-    displayNeedsUpdate.rssi = false;
-  }
-}
-
-void showFrequencyUnit() {
+  // Show frequency unit
   const Band& band = BAND_TABLE[currentBandIndex];
   const char* unit = (band.type == BAND_TYPE_FM || band.type == BAND_TYPE_SW) ? "MHz" : "kHz";
   
@@ -1070,6 +891,16 @@ void showFrequencyUnit() {
   freqUnitSprite.setTextColor(COLOR_WHITE);
   freqUnitSprite.drawString(unit, 0, 0);
   freqUnitSprite.pushSprite(FREQ_UNIT_X_POS, FREQ_UNIT_Y_POS);
+  
+  // Show other displays
+  if (band.type != BAND_TYPE_FM) {
+    showStepIndicator();
+    showAGC();
+    showBandwidth();
+  }
+  
+  showRSSI();
+  showFrequency();
 }
 
 void showFrequency() {
@@ -1100,7 +931,7 @@ void showFrequency() {
     snprintf(buffer, sizeof(buffer), "%ld", thousands);
   }
   else {
-    // SW: XX.XXX kHz
+    // SW: XX.XXX MHz
     if (actualFreqHz >= 1000) {
       long millions = actualFreqHz / 1000000;
       long thousands = (actualFreqHz / 1000) % 1000;
@@ -1108,19 +939,21 @@ void showFrequency() {
     }
   }
   
+  //freqSprite.drawRoundRect(0, 0, FREQ_SPRITE_WIDTH, FREQ_SPRITE_HEIGHT, 5, COLOR_WHITE); // Draw rectangle only when debuging
   freqSprite.drawString(buffer, FREQ_SPRITE_WIDTH, 0);
   
-  // Show BFO only when in LSB or USB mode on SW bands
-  if (band.type == BAND_TYPE_SW && 
-      (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB)) {
+  // Show BFO only on SW bands in SSB mode (LSB/USB) - not in AM mode
+  bool showBFO = (band.type == BAND_TYPE_SW) &&
+                 (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB);
+  if (showBFO) {
     // Choose background color based on whether BFO mode is active
     uint16_t bfoBackgroundColor;
-    if (radioState.bfoMode) {
+    if (radioState.bfoEnabled && radioState.bfoMode) {
       // BFO mode active - use highlight color
-      bfoBackgroundColor = COLOR_BFO_SELECTED;
+      bfoBackgroundColor = COLOR_BFO_SELECTED;  // Highlight color
     } else {
       // BFO mode not active - use normal color
-      bfoBackgroundColor = COLOR_BFO;
+      bfoBackgroundColor = COLOR_BFO;  // Normal color
     }
     
     bfoSprite.fillRoundRect(0, 0, BFO_SPRITE_WIDTH, BFO_SPRITE_HEIGHT, 5, bfoBackgroundColor);
@@ -1137,7 +970,7 @@ void showFrequency() {
     }
     
     // Draw "BFO: +" or "BFO: -" label at the top
-    bfoSprite.setTextFont(&fonts::DejaVu40);
+    bfoSprite.setTextFont(&fonts::DejaVu40); //Orbitron_Light_24);
     bfoSprite.setTextColor(COLOR_WHITE);
     bfoSprite.setTextDatum(TL_DATUM);  // Top-Left alignment
     
@@ -1151,8 +984,10 @@ void showFrequency() {
     
     char bfoBuffer[10];
     snprintf(bfoBuffer, sizeof(bfoBuffer), "%5d", absValue);
-    
-    bfoSprite.drawString(bfoBuffer, BFO_SPRITE_WIDTH - 10, 110); // Aligned right
+  
+
+    //bfoSprite.drawString(bfoBuffer, BFO_SPRITE_WIDTH -10, 52); // Aligned right
+    bfoSprite.drawString(bfoBuffer, BFO_SPRITE_WIDTH -10, 110); // Aligned right
   }
   
   // Push to display
@@ -1167,88 +1002,69 @@ void showFrequency() {
 void showMode() {
   const Band& band = BAND_TABLE[currentBandIndex];
   
-  // Band name
+  // Show band name
   if (displayCache.bandIndex != currentBandIndex) {
-    drawLabel(bandSprite, BAND_LABEL_WIDTH, BAND_LABEL_HEIGHT, 
+    drawLabel(bandSprite, BAND_LABEL_WIDTH, BAND_LABEL_HEIGHT,
               band.name, BAND_LABEL_BACKGROUND, BAND_LABEL_BORDER);
     bandSprite.pushSprite(BAND_LABEL_X_POS, BAND_LABEL_Y_POS);
     displayCache.bandIndex = currentBandIndex;
   }
   
-  // Mode/stereo indicator
-  if (displayCache.mode != radioState.currentMode || 
-      (band.type == BAND_TYPE_FM && displayCache.stereo != radio.getCurrentPilot())) {
-    
-    const char* modeText;
-    if (band.type == BAND_TYPE_FM) {
-      bool isStereo = radio.getCurrentPilot();
-      modeText = isStereo ? "Stereo" : "Mono";
-      displayCache.stereo = isStereo;
-    } else {
-      modeText = getModeDescription(radioState.currentMode);
+  // Show mode
+  // For FM, check actual stereo status; for others check mode change
+  bool needsUpdate = (displayCache.mode != radioState.currentMode);
+  
+  if (needsUpdate) {
+    if (band.type == BAND_TYPE_FM && radio.getCurrentPilot()) {
+      drawLabel(modeSprite, MODE_LABEL_WIDTH, MODE_LABEL_HEIGHT,
+                "Stereo", COLOR_DODGERBLUE, COLOR_BLUE);
+    }
+    else if (band.type == BAND_TYPE_FM) {
+      drawLabel(modeSprite, MODE_LABEL_WIDTH, MODE_LABEL_HEIGHT,
+                "Mono", TFT_DARKGREY, TFT_LIGHTGREY);
+    }
+    else {
+      drawLabel(modeSprite, MODE_LABEL_WIDTH, MODE_LABEL_HEIGHT,
+                getModeDescription(radioState.currentMode),
+                MODE_LABEL_BACKGROUND, MODE_LABEL_BORDER);
     }
     
-    drawLabel(modeSprite, MODE_LABEL_WIDTH, MODE_LABEL_HEIGHT,
-              modeText, MODE_LABEL_BACKGROUND, MODE_LABEL_BORDER);
     modeSprite.pushSprite(MODE_LABEL_X_POS, MODE_LABEL_Y_POS);
     displayCache.mode = radioState.currentMode;
   }
 }
 
 void showBandwidth() {
-  // Calculate current bandwidth index based on mode
-  int8_t currentBwIdx;
-  if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
-    currentBwIdx = ssbBandwidthIndex;
-  } else if (radioState.currentMode == MODE_AM) {
-    currentBwIdx = amBandwidthIndex + 100;  // Offset to distinguish from SSB
-  } else {
-    currentBwIdx = -1;  // FM or other (no bandwidth control)
-  }
-  
-  // Check cache - skip redraw if unchanged
-  if (displayCache.bandwidth == currentBwIdx) {
-    return;  // No change, skip unnecessary redraw
-  }
-  displayCache.bandwidth = currentBwIdx;
-  
-  // Bandwidth has changed, update display
-  const char* bwText;
-  char buffer[12];
+  char buffer[20];
   
   if (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) {
-    snprintf(buffer, sizeof(buffer), "BW: %s", 
+    snprintf(buffer, sizeof(buffer), "BW: %s",
              SSB_BANDWIDTHS[ssbBandwidthIndex].description);
-    bwText = buffer;
   }
   else if (radioState.currentMode == MODE_AM) {
     snprintf(buffer, sizeof(buffer), "BW: %s",
              AM_BANDWIDTHS[amBandwidthIndex].description);
-    bwText = buffer;
   }
   else {
-    bwText = "";
+    buffer[0] = '\0';
   }
   
-  drawLabel(bandwidthSprite, BANDWIDTH_LABEL_WIDTH, BANDWIDTH_LABEL_HEIGHT,
-            bwText, BANDWIDTH_LABEL_BACKGROUND, BANDWIDTH_LABEL_BORDER);
-  bandwidthSprite.pushSprite(BANDWIDTH_LABEL_X_POS, BANDWIDTH_LABEL_Y_POS);
+  if (buffer[0] != '\0') {
+    drawLabel(bandwidthSprite, BANDWIDTH_LABEL_WIDTH, BANDWIDTH_LABEL_HEIGHT,
+              buffer, BANDWIDTH_LABEL_BACKGROUND, BANDWIDTH_LABEL_BORDER);
+    bandwidthSprite.pushSprite(BANDWIDTH_LABEL_X_POS, BANDWIDTH_LABEL_Y_POS);
+  }
 }
 
 void showAGC() {
-  // Check cache - skip redraw if unchanged
-  if (displayCache.agc == agcState.index) {
-    return;  // No change, skip unnecessary redraw
-  }
-  displayCache.agc = agcState.index;
-  
-  // AGC has changed, update display
-  char buffer[12];
+  char buffer[20];
   
   if (agcState.index == 0) {
-    strcpy(buffer, "AGC: ON");
+    snprintf(buffer, sizeof(buffer), "AGC: ON");
   } else {
-    snprintf(buffer, sizeof(buffer), "ATT: %d", agcState.attenuation);
+    char attenStr[10];
+    radio.convertToChar(agcState.attenuation, attenStr, 2, 0, '.');
+    snprintf(buffer, sizeof(buffer), "ATT: %s", attenStr);
   }
   
   drawLabel(agcSprite, AGC_LABEL_WIDTH, AGC_LABEL_HEIGHT,
@@ -1257,43 +1073,40 @@ void showAGC() {
 }
 
 void showRSSI() {
-  radio.getCurrentReceivedSignalQuality();
-  currentRSSI = radio.getCurrentRSSI();
-  currentSNR = radio.getCurrentSNR();
+  const Band& band = BAND_TABLE[currentBandIndex];
   
+  // Handle stereo/mono indicator for FM
+  // Check stereo status and update mode display if it changed
+  if (band.type == BAND_TYPE_FM) {
+    bool currentStereo = radio.getCurrentPilot();
+    if (displayCache.stereo != currentStereo) {
+      // Force mode update by temporarily invalidating the cache
+      RadioMode savedMode = displayCache.mode;
+      displayCache.mode = (RadioMode)255;  // Force update
+      showMode();
+      displayCache.stereo = currentStereo;
+    }
+  }
+  
+  // Calculate S-meter reading
   uint8_t sMeter = calculateSMeterReading(currentRSSI);
   
-  // Only update if changed
   if (displayCache.rssi != sMeter) {
     signalStrengthSprite.fillSprite(TFT_BLACK);
     signalStrengthSprite.setFont(&fonts::Orbitron_Light_24);
     signalStrengthSprite.setTextSize(1);
     signalStrengthSprite.setTextColor(SIGNAL_STRENGTH_COLOR);
     
-    char buffer[12];
-    // Format S-meter display based on value
-    if (sMeter <= 9) {
-      // S0 through S9
-      snprintf(buffer, sizeof(buffer), "S%d", sMeter);
-    } else {
-      // S9+10dB through S9+60dB
-      const char* plusDB[] = {"+10", "+20", "+40", "+60"};
-      snprintf(buffer, sizeof(buffer), "S9%s", plusDB[sMeter - 10]);
-    }
+    char buffer[10];
+    snprintf(buffer, sizeof(buffer), "S%d%s", sMeter, (sMeter == 9) ? "+" : "");
     signalStrengthSprite.drawString(buffer, 0, 0);
     
-    // Draw signal strength bars (14 bars total: S0-S9 + 4 over-S9)
-    // S0-S9 use green, over-S9 use red
-    for (int i = 0; i < 14; i++) {
-      int xPos = 100+ (i * 7); // Was 60 without pluses
-      
-      if (sMeter > i) {
-        // Filled bar
-        uint16_t color = (i < 9) ? TFT_GREEN : TFT_RED;  // Green for S0-S9, red for over-S9
-        signalStrengthSprite.fillRect(xPos, 10, 5, 14, color);
+    // Draw signal strength bars
+    for (int i = 1; i < 10; i++) {
+      if (sMeter >= i) {
+        signalStrengthSprite.fillRect(60 + (i * 7), 10, 5, 14, TFT_GREEN);
       } else {
-        // Empty bar outline
-        signalStrengthSprite.drawRect(xPos, 10, 5, 14, TFT_LIGHTGREY);
+        signalStrengthSprite.drawRect(60 + (i * 7), 10, 5, 14, TFT_LIGHTGREY);
       }
     }
     
@@ -1310,10 +1123,9 @@ void showStepIndicator() {
   int xPos = 0;
   bool drawTriangle = true;  // Flag to control whether to draw triangle
   
-  // If in BFO mode on SW band (and in SSB mode), don't draw triangle (BFO sprite background shows mode instead)
-  if (band.type == BAND_TYPE_SW && 
-      (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB) && 
-      radioState.bfoMode) {
+  // If in BFO mode on SW band in SSB mode, don't draw triangle (BFO sprite background shows mode instead)
+  bool isSSBMode = (radioState.currentMode == MODE_LSB || radioState.currentMode == MODE_USB);
+  if (band.type == BAND_TYPE_SW && isSSBMode && radioState.bfoEnabled && radioState.bfoMode) {
     drawTriangle = false;  // Skip triangle, BFO background color indicates mode
   }
   else if (band.type == BAND_TYPE_FM) {
@@ -1340,12 +1152,14 @@ void showStepIndicator() {
 
 void drawLabel(LGFX_Sprite &sprite, int width, int height, const char* text,
                uint16_t bgColor, uint16_t borderColor) {
-  sprite.fillSprite(bgColor);
-  sprite.drawRect(0, 0, width, height, borderColor);
+  sprite.fillSprite(TFT_BLACK);
+  sprite.fillRoundRect(0, 0, width, height, 5, bgColor);
+  sprite.drawRoundRect(0, 0, width, height, 5, borderColor);
   
-  sprite.setTextColor(COLOR_WHITE);
   sprite.setTextDatum(MC_DATUM);
-  sprite.setFont(&fonts::Orbitron_Light_24);
+  sprite.setTextFont(&fonts::Orbitron_Light_24);
+  sprite.setTextSize(1);
+  sprite.setTextColor(COLOR_WHITE);
   sprite.drawString(text, width / 2, height / 2);
 }
 
@@ -1353,36 +1167,11 @@ void drawLabel(LGFX_Sprite &sprite, int width, int height, const char* text,
 // UTILITY FUNCTIONS
 // ============================================================================
 
-void resetCommandMode(bool* flagToPreserve, bool preserveValue,
-                     void (*displayCallback)()) {
-  commandState.band = false;
-  commandState.agc = false;
-  commandState.bandwidth = false;
-  commandState.step = false;
-  
-  if (flagToPreserve != nullptr) {
-    *flagToPreserve = preserveValue;
-  }
-  
-  if (displayCallback != nullptr) {
-    displayCallback();
-  }
-  
-  // Update active command
-  if (commandState.band) commandState.active = CMD_BAND;
-  else if (commandState.agc) commandState.active = CMD_AGC;
-  else if (commandState.bandwidth) commandState.active = CMD_BANDWIDTH;
-  else if (commandState.step) commandState.active = CMD_STEP;
-  else commandState.active = CMD_NONE;
-  
-  lastRSSIUpdate = millis();
-}
-
 const char* getModeDescription(RadioMode mode) {
-  if (mode < MODE_DESCRIPTION_COUNT) {
-    return MODE_DESCRIPTIONS[mode];
+  if (mode >= MODE_DESCRIPTION_COUNT) {
+    return "???";
   }
-  return "";
+  return MODE_DESCRIPTIONS[mode];
 }
 
 bool shouldUpdateRSSI() {
@@ -1390,36 +1179,25 @@ bool shouldUpdateRSSI() {
 }
 
 void updateRSSIIfNeeded() {
-  if (shouldUpdateRSSI()) {
+  if (!shouldUpdateRSSI()) return;
+  
+  radio.getCurrentReceivedSignalQuality();
+  uint8_t newRSSI = radio.getCurrentRSSI();
+  
+  if (currentRSSI != newRSSI) {
+    currentRSSI = newRSSI;
+    currentSNR = radio.getCurrentSNR();
     showRSSI();
-    lastRSSIUpdate = millis();
   }
-}
-
-void handleCommandTimeout() {
-  if (commandState.active != CMD_NONE) {
-    if ((millis() - lastCommandTime) > COMMAND_TIMEOUT_MS) {
-      resetCommandMode(nullptr, false, nullptr);
-    }
-  }
+  
+  lastRSSIUpdate = millis();
 }
 
 uint8_t calculateSMeterReading(uint8_t rssi) {
-  // Returns S-meter value: 0-9 for S0-S9, 10-13 for S9+10 through S9+60
-  // Return values: 0=S0, 1=S1, ..., 9=S9, 10=S9+10, 11=S9+20, 12=S9+40, 13=S9+60
-  
-  if (rssi < RSSI_S1_THRESHOLD) return 0;      // S0
-  else if (rssi < RSSI_S2_THRESHOLD) return 1; // S1
-  else if (rssi < RSSI_S3_THRESHOLD) return 2; // S2
-  else if (rssi < RSSI_S4_THRESHOLD) return 3; // S3
-  else if (rssi < RSSI_S5_THRESHOLD) return 4; // S4
-  else if (rssi < RSSI_S6_THRESHOLD) return 5; // S5
-  else if (rssi < RSSI_S7_THRESHOLD) return 6; // S6
-  else if (rssi < RSSI_S8_THRESHOLD) return 7; // S7
-  else if (rssi < RSSI_S9_THRESHOLD) return 8; // S8
-  else if (rssi < RSSI_S9_PLUS_10_THRESHOLD) return 9;  // S9
-  else if (rssi < RSSI_S9_PLUS_20_THRESHOLD) return 10; // S9+10
-  else if (rssi < RSSI_S9_PLUS_40_THRESHOLD) return 11; // S9+20
-  else if (rssi < RSSI_S9_PLUS_60_THRESHOLD) return 12; // S9+40
-  else return 13; // S9+60 or higher
+  if (rssi < RSSI_S4_THRESHOLD) return 4;
+  if (rssi < RSSI_S5_THRESHOLD) return 5;
+  if (rssi < RSSI_S6_THRESHOLD) return 6;
+  if (rssi < RSSI_S7_THRESHOLD) return 7;
+  if (rssi < RSSI_S8_THRESHOLD) return 8;
+  return 9;
 }
