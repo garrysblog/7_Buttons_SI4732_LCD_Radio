@@ -1,4 +1,6 @@
-// ST7789 240 x 320 Display Configuration for LovyanGFX
+/* ST7789 240 x 320 display configuration for ESP32 */
+
+// ST7789 Display Configuration for LovyanGFX
 class LGFX : public lgfx::LGFX_Device
 {
   lgfx::Panel_ST7789 _panel_instance;
