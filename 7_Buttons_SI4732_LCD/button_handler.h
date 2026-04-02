@@ -48,7 +48,9 @@ bool handleButtonPress(uint8_t pin, ButtonState& state) {
 void initButtonState(ButtonState& state) {
   state.lastPressTime = 0;
   state.firstPressTime = 0;
+  state.pressStartTime = 0;
   state.isPressed = false;
+  state.holdActive = false;
   state.clickCount = 0;
 }
 
@@ -92,6 +94,67 @@ uint8_t handleButtonPressWithDoubleClick(uint8_t pin, ButtonState& state) {
   }
   
   return 0;  // No press
+}
+
+/**
+ * @brief Handle a button that supports single-press and hold modes.
+ *
+ * Call once per loop() iteration. Returns:
+ *   0 = nothing to act on yet
+ *   1 = single press confirmed (released before hold threshold)
+ *  -1 = held: encoder tick consumed — caller should apply one step
+ *
+ * On release after a hold, returns 0 (clean exit, no single-press action).
+ *
+ * @param pin        GPIO pin number (active LOW)
+ * @param state      Button state structure
+ * @param encCount   Reference to volatile encoderCount global
+ * @return int8_t    0, 1, or -1 as described above
+ */
+int8_t handleButtonSingleOrHeld(uint8_t pin, ButtonState& state, volatile int& encCount) {
+  bool currentlyPressed = (digitalRead(pin) == LOW);
+  unsigned long now = millis();
+
+  if (currentlyPressed && !state.isPressed) {
+    // Debounce check on the falling edge
+    if ((now - state.lastPressTime) > DEBOUNCE_DELAY_MS) {
+      state.isPressed = true;
+      state.pressStartTime = now;
+      state.holdActive = false;
+      state.lastPressTime = now;
+    }
+    return 0;
+  }
+
+  if (currentlyPressed && state.isPressed) {
+    // Button is being held
+    if (!state.holdActive && (now - state.pressStartTime) >= BUTTON_HOLD_THRESHOLD_MS) {
+      state.holdActive = true;
+    }
+    if (state.holdActive) {
+      // Consume one encoder tick per loop if available
+      if (encCount != 0) {
+        int8_t dir = (encCount > 0) ? 1 : -1;
+        encCount = 0;
+        return dir;  // -1 or +1: caller applies one adjustment step
+      }
+    }
+    return 0;
+  }
+
+  if (!currentlyPressed && state.isPressed) {
+    // Button released
+    state.isPressed = false;
+    if (!state.holdActive) {
+      // Released before hold threshold — single press
+      return 1;
+    }
+    // Released after hold — clean exit
+    state.holdActive = false;
+    return 0;
+  }
+
+  return 0;
 }
 
 #endif // BUTTON_HANDLER_H
