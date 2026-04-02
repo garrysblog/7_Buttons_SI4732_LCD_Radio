@@ -4,10 +4,6 @@ A software-defined radio receiver for **FM, AM, Shortwave (SSB/LSB/USB), Medium 
 
 This version was based on ATmega328 with Nokia 5110 version by PU2CLR, Ricardo Feb 2022 https://github.com/pu2clr/SI4735/tree/master/examples/. It has been heavily modified with the assistance of Claude AI. It is provided under the MIT License
 
-BFO Control: BFO (Beat Frequency Oscillator) adjustment is available in LSB and USB modes for fine-tuning SSB reception. The BFO offset is 
-preserved when switching between SSB modes and restored when returning from AM mode. BFO adjustment is not available in AM or FM modes, where 
-standard demodulation is used.
-
 ---
 
 ## 📻 Features
@@ -20,20 +16,21 @@ standard demodulation is used.
 - **Long Wave (LW)**: 150-810 kHz including 2200m ham band
 - **Multi-Mode Demodulation**: AM, LSB (Lower Sideband), USB (Upper Sideband)
 - **Signal Strength**: S-meter with visual bar graph (S4-S9+)
-- **Adjustable Bandwidth**: 
+- **Adjustable Bandwidth**: 6 settings for SSB, 7 settings for AM
 - **AGC Control**: Automatic Gain Control with manual attenuation
 - **Variable Tuning Steps**: Multiple step sizes per band
+- **Per-band default mode**: Each SW band defaults to AM, LSB, or USB on first selection
 - AM coverage is 150 kHz to 30 MHz. Additional bands in this range can be easily added
 
-### Controls:
+### Controls
 - **Rotary Encoder**: Tune frequency (or adjust BFO when BFO mode is active)
-- **MODE Button**: Cycle through AM → LSB → USB → AM
-- **BANDWIDTH Button**: Adjust filter bandwidth
-- **BAND Button**: Cycle through bands (FM, MW, SW1-SW8)
+- **MODE Button**: Cycle through AM → LSB → USB → AM (SW bands only)
+- **BANDWIDTH Button**: Step bandwidth, or hold and rotate encoder to adjust
+- **BAND Button**: Step through bands, or hold and rotate encoder to scroll
 - **SEEK Button**: Auto-scan for stations
-- **AGC Button**: Toggle AGC and adjust attenuation
-- **STEP Button**: Change frequency step size
-- **BFO Button**: Toggle BFO control mode (SSB only)
+- **AGC Button**: Step AGC/attenuation, or hold and rotate encoder to adjust
+- **STEP Button**: Step through tuning step sizes, or hold and rotate encoder to adjust
+- **BFO/VFO Button**: Toggle BFO mode / reset BFO or frequency (SSB bands only)
 
 ---
 
@@ -42,14 +39,14 @@ standard demodulation is used.
 ### Core Components
 
 - **ESP32 Development Module** - Main microcontroller
-- **SI4732 Radio IC** - Radio receiver chip and support components
+- **SI4735 Radio IC** - Radio receiver chip and support components
 - **ST7789 TFT Display** (240x320 pixels) - Visual interface
 - **Rotary Encoder** - Main tuning control
 - **7 Push Buttons** - Function controls
 
 ### Pin Connections
 
-#### ESP32 to SI4732
+#### ESP32 to SI4735
 - SDIO: GPIO 21
 - SCLK: GPIO 22
 - SEN: GND
@@ -75,13 +72,15 @@ standard demodulation is used.
 - Seek Button: GPIO 15
 - AGC Button: GPIO 13
 - Step Button: GPIO 14
-- BFO Toggle Button: GPIO 19
+- BFO/VFO Toggle Button: GPIO 19
 
 > **Note**: All buttons connect between the GPIO pin and GND. Internal pullups are enabled in software.
 
 ### Power Supply
-- 3.3V or 5V 
+- 3.3V or 5V
 - Ensure adequate current capacity for ESP32 and display (500mA+ recommended)
+
+---
 
 ## Features
 
@@ -90,43 +89,53 @@ standard demodulation is used.
 **FM Band (VHF)**
 - Range: 64.0 - 108.0 MHz
 - Default: 103.9 MHz
+- Default mode: FM
 - Mono/Stereo reception with indicator
 
 **Shortwave Bands (Amateur Radio Focused)**
-- SW1 (160M): 1.843 MHz - 160m amateur band
-- SW2 (80M): 3.776 MHz - 80m amateur band
-- SW3 (40M): 7.060 MHz - 40m amateur band
-- SW4 (30M): 10.120 MHz - 30m amateur band
-- SW5 (20M): 14.112 MHz - 20m amateur band
-- SW6 (17M): 18.110 MHz - 17m amateur band
-- SW7 (15M): 21.150 MHz - 15m amateur band
-- SW8 (12M): 24.930 MHz - 12m amateur band
-- SW9 (10M): 28.300 MHz - 10m amateur band
+
+| Band | Frequency | Default Mode |
+|------|-----------|--------------|
+| SW1 (160M) | 1.843 MHz | LSB |
+| SW2 (80M) | 3.776 MHz | LSB |
+| SW3 (40M) | 7.060 MHz | LSB |
+| SW4 (30M) | 10.120 MHz | USB |
+| SW5 (20M) | 14.112 MHz | USB |
+| SW6 (17M) | 18.110 MHz | USB |
+| SW7 (15M) | 21.150 MHz | USB |
+| SW8 (12M) | 24.930 MHz | USB |
+| SW9 (10M) | 28.300 MHz | USB |
+
+Each SW band defaults to its listed mode on first selection after boot. Subsequent visits to the same band remember the last mode the user selected.
 
 **Citizens Band (CB)**
 - CB (11M): 26.9 - 27.5 MHz
 - Default: 27.085 MHz (Australian CB)
+- Default mode: AM
 
 **Medium Wave (MW)**
 - Range: 150 - 1720 kHz
 - Default: 810 kHz
-- AM broadcast band
+- Default mode: AM
 
 **Long Wave (LW)**
 - Range: 150 - 810 kHz
 - Default: 401 kHz
-- LW broadcast band
+- Default mode: AM
 
 **2200M Amateur Band**
 - Range: 150 - 500 kHz
 - Default: 135 kHz
+- Default mode: AM
 
 ### Demodulation Modes
 
-- **FM** - Frequency Modulation (FM broadcast)
-- **AM** - Amplitude Modulation (MW/SW)
-- **LSB** - Lower Sideband (SSB for SW amateur bands)
-- **USB** - Upper Sideband (SSB for SW amateur bands)
+- **FM** - Frequency Modulation (FM broadcast only)
+- **AM** - Amplitude Modulation (SW/MW/LW)
+- **LSB** - Lower Sideband (SW bands only)
+- **USB** - Upper Sideband (SW bands only)
+
+Mode cycling (AM → LSB → USB → AM) is available on SW bands only. FM, MW, and LW bands do not support SSB modes.
 
 ### Advanced Tuning System
 
@@ -135,23 +144,21 @@ standard demodulation is used.
 - Multiple step sizes for precise control
 - Frequency memory for all bands (remembers last frequency when switching)
 
-#### BFO (Beat Frequency Oscillator) - Separate Control
+#### BFO (Beat Frequency Oscillator) - SSB Bands Only
 - **Independent ±8000 Hz adjustment range**
-- Enables Hz-level precision tuning on SSB modes (LSB/USB)
+- Available only on SW bands in LSB or USB mode
 - Two operational modes:
-  - **VFO Mode**: Encoder adjusts main frequency (background: black)
-  - **BFO Mode**: Encoder adjusts BFO offset (background: slate blue)
+  - **VFO Mode**: Encoder adjusts main frequency (BFO background: black)
+  - **BFO Mode**: Encoder adjusts BFO offset (BFO background: slate blue)
 - Visual indicator shows current offset with +/- sign
-- **Single press** BFO button to toggle between VFO/BFO adjustment modes
-- **Double-press** BFO button to reset BFO to 0 Hz
-- BFO offset is preserved when switching between SSB modes and restored when returning from AM mode
-- **Note:** BFO adjustment is only available in LSB and USB modes (SSB patch enables proper SSB demodulation without requiring BFO adjustment for normal operation)
+																	
+											   
 
 #### Step Sizes
 - **FM**: 1 MHz → 100 kHz → 10 kHz
 - **MW/LW**: 100 kHz → 10 kHz → 1 kHz
 - **SW**: 10 MHz → 1 MHz → 100 kHz → 10 kHz → 1 kHz
-- **Plus Hz tuning** via BFO when enabled
+- **Plus Hz tuning** via BFO when in SSB mode
 
 ### Bandwidth Control
 
@@ -174,28 +181,20 @@ standard demodulation is used.
 
 ### AGC (Automatic Gain Control)
 
-### AGC (Automatic Gain Control)
-- **AGC: ON** (Index 0) - Automatic signal level management with dynamic gain adjustment
-- **Manual Attenuation** (Index 1-37) - Manual RF gain control (AGC disabled)
-  - **ATT: 0** (Index 1) - Manual mode with minimum attenuation (maximum gain)
-  - **ATT: 1-36** (Index 2-37) - Increasing attenuation levels
-  - Useful for strong signal handling, preventing overload, and noise reduction
-- **Single press** AGC button to enter/exit AGC adjustment mode
-- **Double-press** AGC button to instantly reset to "AGC: ON"
-- AGC stops at limits (does not wrap around) for intuitive control
+- **AGC ON** (Index 0) - Automatic signal level management
+- **Manual Attenuation** (Index 1-37) - Manual RF gain reduction
+  - Adjustable from 0 to maximum attenuation
+  - Useful for strong signal handling and noise reduction
+  - Index > 1 indicates manual mode is active
 
 ### Signal Quality Display
 
-### Signal Quality Display
-- **S-Meter**: Full range signal strength indicator (**S0 to S9+60dB**)
-  - Standard S-units: S0 (extremely weak) through S9 (strong)
-  - Over-S9 readings: S9+10, S9+20, S9+40, S9+60 (in dB above S9)
-- **Bar Graph**: 14-bar real-time visualization
-  - Green bars (S0-S9): Normal signal range
-  - Red bars (S9+10 to S9+60): Very strong signals - consider using attenuation
+- **S-Meter**: Visual signal strength indicator (S4 to S9+)
 - **RSSI Monitoring**: Updates every 900ms
+- **Bar Graph**: Real-time signal strength visualization
 - **FM Stereo Indicator**: Shows Mono/Stereo reception status
 
+---
 
 ## User Interface
 
@@ -209,9 +208,9 @@ The 320x240 landscape display shows:
 
 **Center Section:**
 - Large frequency display
-- BFO offset display (when enabled)
+- BFO offset display (SSB mode on SW bands only)
   - Shows +/- sign and offset value
-  - Background color indicates active mode (VFO/BFO)
+  - Background colour indicates active mode (black = VFO, slate blue = BFO)
 - Step size indicator (red triangle below frequency)
 
 **Bottom Section (Status Labels):**
@@ -222,61 +221,48 @@ The 320x240 landscape display shows:
 
 ### Button Functions
 
-#### MODE Button
-- **Single press**: Cycle through demodulation modes
-  - Shortwave/MW/LW bands: AM → LSB → USB → AM
-  - FM band: Mode change disabled (FM only)
-- Mode and bandwidth display update automatically when switching
+#### 1. Mode Button (GPIO 4)
+- **Press**: Cycle through demodulation modes: AM → LSB → USB → AM
+- Available on SW bands only; no effect on FM, MW, or LW
+- SSB patch is loaded automatically on first switch to LSB or USB
 
-#### BANDWIDTH Button
-- **Single press**: Enter/exit bandwidth adjustment mode
-- **While in bandwidth mode**: Rotate encoder to adjust filter bandwidth
-  - SSB (LSB/USB): 0.5 kHz, 1.0 kHz, 1.2 kHz, 2.2 kHz, 3.0 kHz, 4.0 kHz
-  - AM: 1.0 kHz, 1.8 kHz, 2.0 kHz, 2.5 kHz, 3.0 kHz, 4.0 kHz, 6.0 kHz
-- Bandwidth stops at limits (does not wrap around)
-- **Double-press**: Instantly reset to default bandwidth for mode
-- Different bandwidth settings are maintained for SSB and AM modes
+#### 2. Bandwidth Button (GPIO 5)
+- **Single press**: Step to the next bandwidth setting in the last encoder direction
+- **Hold + rotate encoder**: Scroll through bandwidths in real time
+							 
+- Available for AM and SSB modes only; no effect on FM
 
-#### BAND Button
-- **Single press**: Enter/exit band selection mode
-- **While in band mode**: Rotate encoder to cycle through bands
-  - FM → SW1-SW9 → CB → MW → LW → 2200M
-- **Double-press**: Reset to default frequency for current band
-- Last tuned frequency is remembered for each band
+#### 3. Band Button (GPIO 32)
+- **Single press**: Step to the next band in the last encoder direction
+- **Hold + rotate encoder**: Scroll through bands in real time
+							 
 
-#### SEEK Button
-- **Single press**: Auto-scan for stations
-  - Seeks in the direction of last encoder rotation
-  - Stops when station found or band limit reached
-- Not available on FM band
+#### 4. Seek Button (GPIO 15)
+- **Press**: Initiate automatic station seeking
+- Direction: Based on last encoder rotation direction
+- Stops when a signal is detected or the band limit is reached
 
-#### AGC Button
-- **Single press**: Enter/exit AGC adjustment mode
-- **While in AGC mode**: Rotate encoder to adjust gain control
-  - Turn right: Increase attenuation (quieter, reduces strong signals)
-  - Turn left: Decrease attenuation (louder, more sensitive)
-- **Double-press**: Instantly reset to "AGC: ON" (automatic mode)
-- AGC stops at limits (does not wrap around)
+#### 5. AGC Button (GPIO 13)
+- **Single press**: Step AGC/attenuation one position in the last encoder direction
+- **Hold + rotate encoder**: Adjust AGC/attenuation in real time
+  - Counter-clockwise: Move toward AGC ON (automatic)
+  - Clockwise: Increase manual attenuation
+							 
 
-#### STEP Button
-- **Single press**: Enter/exit step size adjustment mode
-  - FM: 10 kHz, 100 kHz, 200 kHz
-  - MW/LW: 1 kHz, 5 kHz, 9 kHz, 10 kHz
-  - SW: 1 kHz, 5 kHz, 10 kHz, 50 kHz, 100 kHz, 500 kHz, 1 MHz
-  - Hz-precision tuning available for fine adjustments
-- Step indicator shows current position on display
-- Step stops at limits (does not wrap around)
-- **Double-press**: Instantly reset step size to default for band
-- **First encoder rotation after step change**: Rounds frequency to nearest step boundary in rotation direction
+#### 6. Step Button (GPIO 14)
+- **Single press**: Step to the next tuning step size in the last encoder direction
+- **Hold + rotate encoder**: Scroll through step sizes in real time
+- Red triangle indicator shows current step position
+							 
 
-#### BFO Button (SSB modes only)
-- **Single press**: Toggle between VFO and BFO adjustment modes
-  - VFO mode: Encoder adjusts main frequency
-  - BFO mode: Encoder adjusts BFO offset (±8000 Hz range)
-- **Double-press**: Reset BFO offset to 0 Hz
-- Visual indicator changes background color to show active mode
-- Only functional in LSB and USB modes
-- BFO offset preserved when switching between SSB modes
+#### 7. BFO/VFO Toggle Button (GPIO 19)
+- **Single press** (SW band, LSB/USB mode only):
+  - If BFO is disabled: enables BFO and enters BFO adjustment mode, restoring the last saved offset
+  - If BFO is enabled: toggles between VFO mode and BFO adjustment mode
+- **Double press**:
+  - If in **BFO mode**: resets BFO offset to 0 Hz
+  - If in **VFO mode** (or BFO disabled): resets the frequency to the band's default frequency
+								
 
 ### Rotary Encoder Operation
 
@@ -284,20 +270,20 @@ The 320x240 landscape display shows:
 - Adjusts frequency based on current step size
 - Clockwise: Increase frequency
 - Counter-clockwise: Decrease frequency
-- Sets direction for seek function
+- Sets direction used by seek and single-press button steps
 
-**In BFO Mode:**
+**In BFO Mode (SW + SSB only):**
 - Adjusts BFO offset in ±10 Hz steps
 - Provides Hz-level tuning precision
-- Visual feedback via BFO display background color
+- Visual feedback via BFO display background colour
 
-**In Command Modes:**
-- Used to adjust the active parameter:
-  - Band selection
-  - Step size
-  - Bandwidth
-  - AGC/Attenuation
-- Rate-limited to 150ms between adjustments
+**While a Button is Held:**
+- Encoder adjusts the held button's setting in real time
+- Normal frequency tuning is suspended for the duration of the hold
+- Releasing the button exits cleanly with no additional step fired
+
+---
+										   
 
 ## Technical Details
 
@@ -305,9 +291,9 @@ The 320x240 landscape display shows:
 
 - Button debounce: 50ms
 - Double-press window: 400ms
-- Command mode timeout: 1.5 seconds
+- Button hold threshold: 300ms (hold duration before hold mode activates)
 - RSSI update interval: 900ms
-- Encoder rate limit: 150ms (in command modes)
+											  
 
 ### Display Technology
 
@@ -320,8 +306,9 @@ The 320x240 landscape display shows:
 
 - Default volume: 55
 - BFO step size: 10 Hz
-- BFO threshold: ±1000 Hz (triggers mode switching behavior)
-- SSB patch: Compressed patch loaded on-demand
+- SSB patch: Compressed patch loaded on first switch to LSB or USB; cleared when returning to AM
+
+---
 
 ## Compilation Requirements
 
@@ -341,26 +328,31 @@ The 320x240 landscape display shows:
 - Flash Mode: QIO
 - Partition Scheme: Default 4MB with spiffs
 
+---
+
 ## 🐛 Troubleshooting
 
 ### Display Issues
 - **Blank screen**: Check SPI connections and power
-- **Inverted colors**: Adjust `cfg.invert` in LGFX_ST7789.h (line 61)
+- **Inverted colors**: Adjust `cfg.invert` in LGFX_ST7789.h
 - **Wrong orientation**: Display is configured for landscape mode
 
 ### Radio Won't Initialize
-- **Check Si4735 reset pin**: (GPIO 33)
-- **Verify I2C pullup resistors**: (4.7kΩ recommended)
-- **Monitor serial output**: (115200 baud) for error messages
+- **Check Si4735 reset pin**: GPIO 33
+- **Verify I2C pullup resistors**: 4.7kΩ recommended
+- **Monitor serial output**: 115200 baud for error messages
 
 ### Encoder Issues
-- **Reversed direction**: Swap ENCODER_PIN_A and ENCODER_PIN_B
+- **Reversed direction**: Swap ENCODER_PIN_A and ENCODER_PIN_B in config.h
 - **Erratic behavior**: Check for loose connections or add hardware debouncing
 
 ### Button Issues
 - **Verify buttons**: connect GPIO to GND (active LOW)
 - **Not responding**: Check pull-up configuration (active LOW)
 - **Multiple triggers**: Increase DEBOUNCE_DELAY_MS in config.h
+- **Hold not activating**: Increase BUTTON_HOLD_THRESHOLD_MS in config.h
+
+---
 
 ## 📝 Configuration
 
@@ -372,7 +364,7 @@ Edit these values in **config.h**:
 #define DEFAULT_VOLUME 55              // Initial volume (0-63)
 #define DEFAULT_BAND_INDEX 3           // Startup band (3 = SW3 40m)
 #define BFO_STEP_SIZE 10               // BFO step in Hz
-#define COMMAND_TIMEOUT_MS 1500        // Auto-exit time for modes
+#define BUTTON_HOLD_THRESHOLD_MS 300   // Hold duration before hold mode activates
 ```
 
 Edit these values in **constants.h**:
@@ -384,16 +376,16 @@ DEFAULT_AM_BANDWIDTH_INDEX = 4         // 3.0 kHz for AM
 
 ### Adding/Modifying Bands
 
-Edit `constants.h`, BAND_TABLE array:
+Edit the `BAND_TABLE` array in **constants.h**:
 ```cpp
-{"Name", BAND_TYPE_XX, minFreq, maxFreq, defaultFreq, defaultStep}
+{"Name", BAND_TYPE_XX, minFreq, maxFreq, defaultFreq, defaultStep, defaultMode}
 ```
+
+`defaultMode` sets the demodulation mode applied when the band is first selected after boot. Valid values: `MODE_FM`, `MODE_AM`, `MODE_LSB`, `MODE_USB`.
 
 ### Display Customization
 
-Edit `config.h`:
-- Display positions and sizes
-- Color schemes
+Edit `config.h` to adjust display positions, sizes, and colour schemes.
 
 ---
 
@@ -405,14 +397,15 @@ Edit `config.h`:
 - **LovyanGFX Documentation**: [github.com/lovyan03/LovyanGFX](https://github.com/lovyan03/LovyanGFX)
 - **ESP32 Pinout Reference**: [randomnerdtutorials.com/esp32-pinout-reference-gpios/](https://randomnerdtutorials.com/esp32-pinout-reference-gpios/)
 
+---
+
 ## 📄 License and 🙏 Credits
 
-Licenced under the MIT License
+Licensed under the MIT License
 
-Based on ATmega328 with Nokia 5110 example version by PU2CLR, Ricardo  Feb  2022 [Github](https://github.com/pu2clr/SI4735/tree/master/examples/SI47XX_09_NOKIA_5110)
+Based on ATmega328 with Nokia 5110 example version by PU2CLR, Ricardo Feb 2022 [Github](https://github.com/pu2clr/SI4735/tree/master/examples/SI47XX_09_NOKIA_5110)
 
-- **Author**: This version was modified by Claude AI and [garrysblog.com](https://garrysblog.com/)  
-- **Display Library**: LovyanGFX  
+- **Author**: This version was modified by Claude AI and [garrysblog.com](https://garrysblog.com/)
+- **Display Library**: LovyanGFX
 - **Radio Library**: SI4735 by Ricardo Lima Caratti (PU2CLR)
 - **Encoder Library**: Ben Buxton bb
-
