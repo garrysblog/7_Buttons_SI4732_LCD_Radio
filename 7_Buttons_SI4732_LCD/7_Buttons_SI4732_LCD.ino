@@ -327,9 +327,12 @@ void handleButtons() {
   {
     int8_t result = handleButtonSingleOrHeld(BAND_BUTTON, bandButtonState, encoderCount);
     if (result == 1) {
+      // Single press — step in last encoder direction
       handleBandButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
-    } else if (result != 0) {
-      handleBandButton(result);
+    } else if (result == 2) {
+      handleBandButton(1);   // Hold + CW
+    } else if (result == -1) {
+      handleBandButton(-1);  // Hold + CCW
     }
   }
 
@@ -337,9 +340,12 @@ void handleButtons() {
   {
     int8_t result = handleButtonSingleOrHeld(BANDWIDTH_BUTTON, bandwidthButtonState, encoderCount);
     if (result == 1) {
+      // Single press — step in last encoder direction
       handleBandwidthButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
-    } else if (result != 0) {
-      handleBandwidthButton(result);
+    } else if (result == 2) {
+      handleBandwidthButton(1);   // Hold + CW
+    } else if (result == -1) {
+      handleBandwidthButton(-1);  // Hold + CCW
     }
   }
 
@@ -352,9 +358,12 @@ void handleButtons() {
   {
     int8_t result = handleButtonSingleOrHeld(AGC_BUTTON, agcButtonState, encoderCount);
     if (result == 1) {
+      // Single press — step in last encoder direction
       handleAGCButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
-    } else if (result != 0) {
-      handleAGCButton(result);
+    } else if (result == 2) {
+      handleAGCButton(1);   // Hold + CW
+    } else if (result == -1) {
+      handleAGCButton(-1);  // Hold + CCW
     }
   }
 
@@ -362,9 +371,12 @@ void handleButtons() {
   {
     int8_t result = handleButtonSingleOrHeld(STEP_BUTTON, stepButtonState, encoderCount);
     if (result == 1) {
+      // Single press — step in last encoder direction
       handleStepButton(radioState.encoderDirection == DIRECTION_UP ? 1 : -1);
-    } else if (result != 0) {
-      handleStepButton(result);
+    } else if (result == 2) {
+      handleStepButton(1);   // Hold + CW
+    } else if (result == -1) {
+      handleStepButton(-1);  // Hold + CCW
     }
   }
 
