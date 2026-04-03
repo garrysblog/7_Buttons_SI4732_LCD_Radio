@@ -100,16 +100,18 @@ uint8_t handleButtonPressWithDoubleClick(uint8_t pin, ButtonState& state) {
  * @brief Handle a button that supports single-press and hold modes.
  *
  * Call once per loop() iteration. Returns:
- *   0 = nothing to act on yet
- *   1 = single press confirmed (released before hold threshold)
- *  -1 = held: encoder tick consumed — caller should apply one step
+ *    0 = nothing to act on yet
+ *    1 = single press confirmed (released before hold threshold)
+ *    2 = held, encoder turned clockwise  — apply one step forward
+ *   -1 = held, encoder turned counter-clockwise — apply one step backward
  *
+ * Using 2 (not +1) for clockwise hold keeps single-press (1) unambiguous.
  * On release after a hold, returns 0 (clean exit, no single-press action).
  *
  * @param pin        GPIO pin number (active LOW)
  * @param state      Button state structure
  * @param encCount   Reference to volatile encoderCount global
- * @return int8_t    0, 1, or -1 as described above
+ * @return int8_t    0, 1, 2, or -1 as described above
  */
 int8_t handleButtonSingleOrHeld(uint8_t pin, ButtonState& state, volatile int& encCount) {
   bool currentlyPressed = (digitalRead(pin) == LOW);
@@ -132,11 +134,12 @@ int8_t handleButtonSingleOrHeld(uint8_t pin, ButtonState& state, volatile int& e
       state.holdActive = true;
     }
     if (state.holdActive) {
-      // Consume one encoder tick per loop if available
+      // Consume one encoder tick per loop if available.
+      // Return 2 for CW, -1 for CCW — 1 is reserved for single press only.
       if (encCount != 0) {
-        int8_t dir = (encCount > 0) ? 1 : -1;
+        int8_t dir = (encCount > 0) ? 2 : -1;
         encCount = 0;
-        return dir;  // -1 or +1: caller applies one adjustment step
+        return dir;
       }
     }
     return 0;
